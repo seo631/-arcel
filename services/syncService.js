@@ -106,6 +106,7 @@ async function runSync({ since, until } = {}) {
     const delhiveryResult = await syncDelhiveryTracking();
 
     lastSyncSummary = {
+      type: 'full',
       startedAt,
       finishedAt: new Date(),
       ok: true,
@@ -114,7 +115,68 @@ async function runSync({ since, until } = {}) {
       delhivery: delhiveryResult,
     };
   } catch (err) {
-    lastSyncSummary = { startedAt, finishedAt: new Date(), ok: false, error: err.message };
+    lastSyncSummary = { type: 'full', startedAt, finishedAt: new Date(), ok: false, error: err.message };
+    throw err;
+  } finally {
+    syncInProgress = false;
+  }
+
+  return lastSyncSummary;
+}
+
+/**
+ * "Sync" button: pull orders FROM Shopify only. Never touches Delhivery —
+ * existing tracking/status fields on orders are left exactly as they are.
+ */
+async function runShopifySync({ since, until } = {}) {
+  if (syncInProgress) return { skipped: true, reason: 'A sync is already running' };
+  syncInProgress = true;
+  const startedAt = new Date();
+
+  try {
+    const sinceISO = since || resolveDefaultSince();
+    const shopifyResult = await syncShopifyOrders(sinceISO, until);
+
+    lastSyncSummary = {
+      type: 'shopify',
+      startedAt,
+      finishedAt: new Date(),
+      ok: true,
+      range: { since: sinceISO, until: until || null },
+      shopify: shopifyResult,
+    };
+  } catch (err) {
+    lastSyncSummary = { type: 'shopify', startedAt, finishedAt: new Date(), ok: false, error: err.message };
+    throw err;
+  } finally {
+    syncInProgress = false;
+  }
+
+  return lastSyncSummary;
+}
+
+/**
+ * "Update Delivery Status" button: check LIVE status at Delhivery for
+ * every order not already in a terminal state, and update packagedStatus/
+ * scanHistory/etc. Never touches Shopify — no new orders are pulled in.
+ */
+async function runDelhiveryTracking() {
+  if (syncInProgress) return { skipped: true, reason: 'A sync is already running' };
+  syncInProgress = true;
+  const startedAt = new Date();
+
+  try {
+    const delhiveryResult = await syncDelhiveryTracking();
+
+    lastSyncSummary = {
+      type: 'delhivery',
+      startedAt,
+      finishedAt: new Date(),
+      ok: true,
+      delhivery: delhiveryResult,
+    };
+  } catch (err) {
+    lastSyncSummary = { type: 'delhivery', startedAt, finishedAt: new Date(), ok: false, error: err.message };
     throw err;
   } finally {
     syncInProgress = false;
@@ -130,4 +192,10 @@ function isSyncInProgress() {
   return syncInProgress;
 }
 
-module.exports = { runSync, getLastSyncSummary, isSyncInProgress };
+module.exports = {
+  runSync,
+  runShopifySync,
+  runDelhiveryTracking,
+  getLastSyncSummary,
+  isSyncInProgress,
+};

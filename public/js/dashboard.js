@@ -53,11 +53,18 @@ async function loadSummary() {
   renderStatusStrip(data.statusCounts);
   renderStatusFilterOptions(data.statusCounts);
 
+  const SYNC_TYPE_LABEL = {
+    shopify: 'Shopify sync',
+    delhivery: 'Delivery status check',
+    full: 'Full sync',
+  };
+
   const label = document.getElementById('lastSyncLabel');
   if (data.syncInProgress) {
     label.textContent = 'Syncing…';
   } else if (data.lastSync?.finishedAt) {
-    label.textContent = `Last synced ${new Date(data.lastSync.finishedAt).toLocaleTimeString('en-IN')}`;
+    const kind = SYNC_TYPE_LABEL[data.lastSync.type] || 'Synced';
+    label.textContent = `Last ${kind.toLowerCase()} ${new Date(data.lastSync.finishedAt).toLocaleTimeString('en-IN')}`;
   } else {
     label.textContent = 'Not synced yet';
   }
@@ -397,16 +404,41 @@ async function waitForSyncToFinish() {
   });
 }
 
+// ---- Sync: pull orders FROM Shopify only (doesn't touch Delhivery status) ----
 document.getElementById('syncBtn').onclick = async () => {
   const btn = document.getElementById('syncBtn');
   btn.disabled = true;
   btn.textContent = 'Syncing…';
-  await fetchJSON('/api/sync', { method: 'POST' });
-  await waitForSyncToFinish();
-  btn.disabled = false;
-  btn.textContent = 'Refresh now';
-  loadSummary();
-  loadOrders();
+  try {
+    await fetchJSON('/api/sync/shopify', { method: 'POST' });
+    await waitForSyncToFinish();
+  } catch (err) {
+    alert(err.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Sync Shopify Orders';
+    loadSummary();
+    loadOrders();
+  }
+};
+
+// ---- Update Delivery Status: check LIVE status at Delhivery for every
+// non-terminal order and refresh stats (doesn't pull in any new orders) ----
+document.getElementById('deliveryStatusBtn').onclick = async () => {
+  const btn = document.getElementById('deliveryStatusBtn');
+  btn.disabled = true;
+  btn.textContent = 'Checking…';
+  try {
+    await fetchJSON('/api/sync/delhivery', { method: 'POST' });
+    await waitForSyncToFinish();
+  } catch (err) {
+    alert(err.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Update Delivery Status';
+    loadSummary();
+    loadOrders();
+  }
 };
 
 // ---- Sync a specific date range ----
@@ -426,7 +458,7 @@ document.getElementById('syncRangeBtn').onclick = async () => {
   note.className = 'sync-tool-note';
   note.textContent = 'Syncing…';
   try {
-    await fetchJSON('/api/sync', {
+    await fetchJSON('/api/sync/shopify', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ since, until: until || undefined }),

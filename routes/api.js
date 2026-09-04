@@ -3,7 +3,13 @@ const multer = require('multer');
 const XLSX = require('xlsx');
 const router = express.Router();
 const Order = require('../models/Order');
-const { runSync, getLastSyncSummary, isSyncInProgress } = require('../services/syncService');
+const {
+  runSync,
+  runShopifySync,
+  runDelhiveryTracking,
+  getLastSyncSummary,
+  isSyncInProgress,
+} = require('../services/syncService');
 const { importFromWorkbook } = require('../services/excelImportService');
 
 const PACKAGED_STATUSES = [
@@ -97,6 +103,31 @@ router.post('/sync', async (req, res) => {
   const { since, until } = req.body || {};
   res.json({ message: 'Sync started', range: { since: since || 'default', until: until || null } });
   runSync({ since, until }).catch((err) => console.error('[sync] failed:', err.message));
+});
+
+// POST /api/sync/shopify  { since?: "2026-08-01", until?: "2026-08-31" }
+// "Sync" button — fetches/upserts orders FROM Shopify only. Does not touch
+// Delhivery, so existing tracking status on orders is left untouched.
+router.post('/sync/shopify', async (req, res) => {
+  if (isSyncInProgress()) {
+    return res.status(202).json({ message: 'Sync already in progress' });
+  }
+  const { since, until } = req.body || {};
+  res.json({ message: 'Shopify sync started', range: { since: since || 'default', until: until || null } });
+  runShopifySync({ since, until }).catch((err) => console.error('[sync:shopify] failed:', err.message));
+});
+
+// POST /api/sync/delhivery
+// "Update Delivery Status" button — checks LIVE tracking status at
+// Delhivery for every order not already Delivered/RTO Delivered/Cancelled,
+// and updates packagedStatus/scanHistory/etc. Does not touch Shopify or
+// pull in any new orders.
+router.post('/sync/delhivery', async (req, res) => {
+  if (isSyncInProgress()) {
+    return res.status(202).json({ message: 'Sync already in progress' });
+  }
+  res.json({ message: 'Delivery status update started' });
+  runDelhiveryTracking().catch((err) => console.error('[sync:delhivery] failed:', err.message));
 });
 
 // POST /api/import/excel  (multipart form field name: "file")
