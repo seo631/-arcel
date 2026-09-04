@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Order Tracking — Neat Everyday</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark">NE</span>
+    <div class="brand-text">
+      <h1>Order Tracking</h1>
+      <p>Neat Everyday &middot; Shopify + Delhivery, merged</p>
+    </div>
+  </div>
+  <div class="sync-block">
+    <div class="sync-meta">
+      <span id="lastSyncLabel">Last synced —</span>
+    </div>
+    <button id="syncBtn" class="btn btn-primary">Refresh now</button>
+  </div>
+</header>
+
+<section class="status-strip" id="statusStrip">
+  <!-- status chips injected by dashboard.js -->
+</section>
+
+<section class="sync-tools">
+  <div class="sync-tool">
+    <span class="sync-tool-label">Sync Shopify orders from</span>
+    <input id="syncSince" type="date" />
+    <span class="sync-tool-label">to</span>
+    <input id="syncUntil" type="date" placeholder="today" />
+    <button id="syncRangeBtn" class="btn btn-ghost">Sync this range</button>
+    <span id="syncRangeNote" class="sync-tool-note"></span>
+  </div>
+
+  <div class="sync-tool">
+    <span class="sync-tool-label">Or import from Excel/CSV</span>
+    <input id="excelFile" type="file" accept=".xlsx,.xls,.csv" />
+    <button id="excelUploadBtn" class="btn btn-ghost">Import file</button>
+    <span id="excelNote" class="sync-tool-note"></span>
+  </div>
+</section>
+
+<section class="filters">
+  <input id="searchInput" type="text" placeholder="Search order #, customer, mobile, item, AWB…" />
+
+  <select id="statusFilter">
+    <option value="">All statuses</option>
+  </select>
+
+  <select id="paymentFilter">
+    <option value="">All payment modes</option>
+    <option value="COD">COD</option>
+    <option value="Prepaid">Prepaid</option>
+  </select>
+
+  <label class="date-field">
+    From
+    <input id="fromDate" type="date" />
+  </label>
+  <label class="date-field">
+    To
+    <input id="toDate" type="date" />
+  </label>
+
+  <button id="clearFilters" class="btn btn-ghost">Clear</button>
+</section>
+
+<section class="table-wrap">
+  <table id="ordersTable">
+    <thead>
+      <tr>
+        <th></th>
+        <th>Order Date</th>
+        <th>Order ID</th>
+        <th>Customer</th>
+        <th>Mobile No.</th>
+        <th>Item(s)</th>
+        <th>Qty</th>
+        <th>Pickup Date</th>
+        <th>Est. Delivery</th>
+        <th>Status</th>
+        <th>Payment Mode</th>
+        <th>AWB</th>
+      </tr>
+    </thead>
+    <tbody id="ordersBody">
+      <tr><td colspan="12" class="empty-state">Loading orders&hellip;</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<footer class="pagination">
+  <button id="prevPage" class="btn btn-ghost">&larr; Prev</button>
+  <span id="pageLabel">Page 1</span>
+  <button id="nextPage" class="btn btn-ghost">Next &rarr;</button>
+</footer>
+
+<!-- Scan history detail panel -->
+<div id="scanDrawer" class="drawer">
+  <div class="drawer-head">
+    <h2 id="drawerTitle">Scan history</h2>
+    <button id="closeDrawer" class="btn btn-ghost">Close</button>
+  </div>
+  <div id="drawerBody" class="drawer-body"></div>
+</div>
+<div id="drawerOverlay" class="drawer-overlay"></div>
+
+<script src="/js/dashboard.js"></script>
+</body>
+</html>
