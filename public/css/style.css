@@ -180,6 +180,37 @@ h1, h2 { font-family: 'Fraunces', serif; margin: 0; }
   color: var(--muted);
 }
 
+/* ---------- Selection toolbar ---------- */
+.selection-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 32px;
+  margin: 0 32px 14px;
+  background: #EAF0EB;
+  border: 1px solid var(--forest);
+  border-radius: 8px;
+  flex-wrap: wrap;
+}
+.selection-toolbar[hidden] { display: none; }
+
+#selectedCount {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--forest-dim);
+  margin-right: 4px;
+}
+
+.selection-toolbar select {
+  font-family: inherit;
+  font-size: 13.5px;
+  padding: 8px 11px;
+  border-radius: 7px;
+  border: 1px solid var(--line);
+  background: var(--paper-raised);
+  color: var(--ink);
+}
+
 /* ---------- Table ---------- */
 .table-wrap {
   padding: 0 32px 20px;
@@ -216,6 +247,10 @@ tbody tr:last-child td { border-bottom: none; }
 tbody tr:hover { background: #FAF8F2; }
 
 .order-id, .awb-cell { font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; }
+
+.row-checkbox, #selectAllCheckbox { width: 15px; height: 15px; cursor: pointer; accent-color: var(--forest); }
+tbody tr.row-selected { background: #F3F0E4; }
+tbody tr.row-selected:hover { background: #EFEBDD; }
 
 .status-badge {
   display: inline-block;

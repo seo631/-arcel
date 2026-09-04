@@ -74,10 +74,22 @@
   <button id="clearFilters" class="btn btn-ghost">Clear</button>
 </section>
 
+<section class="selection-toolbar" id="selectionToolbar" hidden>
+  <span id="selectedCount">0 selected</span>
+  <select id="bulkStatusSelect">
+    <option value="">Set status to&hellip;</option>
+  </select>
+  <button id="bulkUpdateBtn" class="btn btn-primary">Update status</button>
+  <button id="downloadSelectedBtn" class="btn btn-ghost">Download selected (Excel)</button>
+  <button id="clearSelectionBtn" class="btn btn-ghost">Clear selection</button>
+  <span id="bulkActionNote" class="sync-tool-note"></span>
+</section>
+
 <section class="table-wrap">
   <table id="ordersTable">
     <thead>
       <tr>
+        <th><input type="checkbox" id="selectAllCheckbox" title="Select all on this page" /></th>
         <th></th>
         <th>Order Date</th>
         <th>Order ID</th>
@@ -93,7 +105,7 @@
       </tr>
     </thead>
     <tbody id="ordersBody">
-      <tr><td colspan="12" class="empty-state">Loading orders&hellip;</td></tr>
+      <tr><td colspan="13" class="empty-state">Loading orders&hellip;</td></tr>
     </tbody>
   </table>
 </section>

@@ -13,6 +13,12 @@ const STATUS_COLORS = {
   'Unknown': 'var(--status-none)',
 };
 
+const PACKAGED_STATUSES = [
+  'Not Yet Shipped', 'Pending', 'Manifested', 'Dispatched', 'In Transit',
+  'Delivered', 'RTO Initiated', 'RTO In Transit', 'RTO Delivered',
+  'Cancelled', 'Lost', 'Unknown',
+];
+
 const state = {
   page: 1,
   limit: 50,
@@ -21,6 +27,7 @@ const state = {
   paymentMode: '',
   from: '',
   to: '',
+  selected: new Set(), // orderNumbers checked via row/select-all checkboxes — persists across pages
 };
 
 async function fetchJSON(url, opts) {
@@ -91,12 +98,12 @@ async function loadOrders() {
   if (state.to) params.set('to', state.to);
 
   const body = document.getElementById('ordersBody');
-  body.innerHTML = '<tr><td colspan="12" class="empty-state">Loading…</td></tr>';
+  body.innerHTML = '<tr><td colspan="13" class="empty-state">Loading…</td></tr>';
 
   const data = await fetchJSON(`/api/orders?${params}`);
 
   if (!data.orders.length) {
-    body.innerHTML = '<tr><td colspan="12" class="empty-state">No orders match these filters.</td></tr>';
+    body.innerHTML = '<tr><td colspan="13" class="empty-state">No orders match these filters.</td></tr>';
   } else {
     body.innerHTML = data.orders.map(rowHTML).join('');
   }
@@ -108,6 +115,15 @@ async function loadOrders() {
   document.querySelectorAll('.expand-btn').forEach((btn) => {
     btn.addEventListener('click', () => openDrawer(btn.dataset.id));
   });
+
+  document.querySelectorAll('.row-checkbox').forEach((cb) => {
+    cb.addEventListener('change', () => {
+      toggleRowSelection(cb.dataset.id, cb.checked);
+    });
+  });
+
+  updateSelectAllState();
+  updateSelectionToolbar();
 }
 
 function rowHTML(o) {
@@ -115,9 +131,11 @@ function rowHTML(o) {
     .map((li) => `<span class="item-name">${escapeHTML(li.name)}</span>`)
     .join('');
   const qty = o.totalQty ?? (o.lineItems || []).reduce((s, li) => s + (li.quantity || 0), 0);
+  const isChecked = state.selected.has(o.orderNumber);
 
   return `
-    <tr>
+    <tr class="${isChecked ? 'row-selected' : ''}">
+      <td><input type="checkbox" class="row-checkbox" data-id="${escapeHTML(o.orderNumber)}" ${isChecked ? 'checked' : ''} /></td>
       <td><button class="expand-btn" data-id="${o.orderNumber}" title="View scan history">&#9432;</button></td>
       <td>${fmtDate(o.orderDate)}</td>
       <td class="order-id">${escapeHTML(o.orderNumber)}</td>
@@ -133,6 +151,135 @@ function rowHTML(o) {
     </tr>
   `;
 }
+
+// ---------- Row selection (checkboxes + toolbar) ----------
+function toggleRowSelection(orderNumber, checked) {
+  if (checked) state.selected.add(orderNumber);
+  else state.selected.delete(orderNumber);
+
+  const row = document.querySelector(`.row-checkbox[data-id="${cssEscape(orderNumber)}"]`)?.closest('tr');
+  if (row) row.classList.toggle('row-selected', checked);
+
+  updateSelectAllState();
+  updateSelectionToolbar();
+}
+
+function cssEscape(value) {
+  return window.CSS && CSS.escape ? CSS.escape(value) : value.replace(/["\\]/g, '\\$&');
+}
+
+function updateSelectAllState() {
+  const boxes = document.querySelectorAll('.row-checkbox');
+  const selectAll = document.getElementById('selectAllCheckbox');
+  if (!boxes.length) {
+    selectAll.checked = false;
+    selectAll.indeterminate = false;
+    return;
+  }
+  const checkedCount = Array.from(boxes).filter((cb) => cb.checked).length;
+  selectAll.checked = checkedCount === boxes.length;
+  selectAll.indeterminate = checkedCount > 0 && checkedCount < boxes.length;
+}
+
+function updateSelectionToolbar() {
+  const toolbar = document.getElementById('selectionToolbar');
+  const count = state.selected.size;
+  document.getElementById('selectedCount').textContent = `${count} selected`;
+  toolbar.hidden = count === 0;
+  if (count === 0) document.getElementById('bulkActionNote').textContent = '';
+}
+
+document.getElementById('selectAllCheckbox').addEventListener('change', (e) => {
+  document.querySelectorAll('.row-checkbox').forEach((cb) => {
+    cb.checked = e.target.checked;
+    toggleRowSelection(cb.dataset.id, e.target.checked);
+  });
+});
+
+document.getElementById('clearSelectionBtn').onclick = () => {
+  state.selected.clear();
+  document.querySelectorAll('.row-checkbox').forEach((cb) => { cb.checked = false; });
+  document.querySelectorAll('tr.row-selected').forEach((tr) => tr.classList.remove('row-selected'));
+  updateSelectAllState();
+  updateSelectionToolbar();
+};
+
+document.getElementById('bulkStatusSelect').innerHTML =
+  '<option value="">Set status to&hellip;</option>' +
+  PACKAGED_STATUSES.map((s) => `<option value="${s}">${s}</option>`).join('');
+
+document.getElementById('bulkUpdateBtn').onclick = async () => {
+  const note = document.getElementById('bulkActionNote');
+  const btn = document.getElementById('bulkUpdateBtn');
+  const status = document.getElementById('bulkStatusSelect').value;
+  const orderNumbers = Array.from(state.selected);
+
+  if (!orderNumbers.length) return;
+  if (!status) {
+    note.className = 'sync-tool-note error';
+    note.textContent = 'Pick a status first.';
+    return;
+  }
+
+  btn.disabled = true;
+  note.className = 'sync-tool-note';
+  note.textContent = 'Updating…';
+  try {
+    const result = await fetchJSON('/api/orders/status', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ orderNumbers, status }),
+    });
+    note.className = 'sync-tool-note ok';
+    note.textContent = `Updated ${result.modified} of ${result.matched} order(s) to "${status}".`;
+    loadSummary();
+    loadOrders();
+  } catch (err) {
+    note.className = 'sync-tool-note error';
+    note.textContent = err.message;
+  } finally {
+    btn.disabled = false;
+  }
+};
+
+document.getElementById('downloadSelectedBtn').onclick = async () => {
+  const note = document.getElementById('bulkActionNote');
+  const btn = document.getElementById('downloadSelectedBtn');
+  const orderNumbers = Array.from(state.selected);
+
+  if (!orderNumbers.length) return;
+
+  btn.disabled = true;
+  note.className = 'sync-tool-note';
+  note.textContent = 'Preparing file…';
+  try {
+    const res = await fetch('/api/orders/export', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ orderNumbers }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || `Export failed (${res.status})`);
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `orders-export-${new Date().toISOString().slice(0, 10)}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    note.className = 'sync-tool-note ok';
+    note.textContent = `Downloaded ${orderNumbers.length} order(s).`;
+  } catch (err) {
+    note.className = 'sync-tool-note error';
+    note.textContent = err.message;
+  } finally {
+    btn.disabled = false;
+  }
+};
 
 function escapeHTML(str) {
   if (str === null || str === undefined) return '';

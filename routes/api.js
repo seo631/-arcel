@@ -1,9 +1,16 @@
 const express = require('express');
 const multer = require('multer');
+const XLSX = require('xlsx');
 const router = express.Router();
 const Order = require('../models/Order');
 const { runSync, getLastSyncSummary, isSyncInProgress } = require('../services/syncService');
 const { importFromWorkbook } = require('../services/excelImportService');
+
+const PACKAGED_STATUSES = [
+  'Not Yet Shipped', 'Pending', 'Manifested', 'Dispatched', 'In Transit',
+  'Delivered', 'RTO Initiated', 'RTO In Transit', 'RTO Delivered',
+  'Cancelled', 'Lost', 'Unknown',
+];
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -104,6 +111,86 @@ router.post('/import/excel', upload.single('file'), async (req, res) => {
     const result = await importFromWorkbook(req.file.buffer);
     if (result.error) return res.status(400).json(result);
     res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PATCH /api/orders/status  { orderNumbers: ["16768", ...], status: "Delivered" }
+// Bulk-updates packagedStatus for the checked orders (from the checkbox
+// column + "Update status" button in the toolbar). Manual overrides like
+// this are expected to get clobbered by the next Shopify/Delhivery sync
+// unless the sync logic is told to respect them — that's out of scope here.
+router.patch('/orders/status', async (req, res) => {
+  try {
+    const { orderNumbers, status } = req.body || {};
+
+    if (!Array.isArray(orderNumbers) || !orderNumbers.length) {
+      return res.status(400).json({ error: 'orderNumbers must be a non-empty array' });
+    }
+    if (!status || !PACKAGED_STATUSES.includes(status)) {
+      return res.status(400).json({ error: `status must be one of: ${PACKAGED_STATUSES.join(', ')}` });
+    }
+
+    const update = { packagedStatus: status };
+    if (status === 'Delivered') update.deliveredAt = new Date();
+
+    const result = await Order.updateMany(
+      { orderNumber: { $in: orderNumbers } },
+      { $set: update }
+    );
+
+    res.json({
+      matched: result.matchedCount ?? result.n,
+      modified: result.modifiedCount ?? result.nModified,
+      status,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/orders/export  { orderNumbers: ["16768", ...] }
+// Excel export of only the checked/selected orders (not the full filtered
+// list) — used by the "Download selected" button.
+router.post('/orders/export', async (req, res) => {
+  try {
+    const { orderNumbers } = req.body || {};
+
+    if (!Array.isArray(orderNumbers) || !orderNumbers.length) {
+      return res.status(400).json({ error: 'orderNumbers must be a non-empty array' });
+    }
+
+    const orders = await Order.find({ orderNumber: { $in: orderNumbers } })
+      .sort({ orderDate: -1 })
+      .lean();
+
+    const rows = orders.map((o) => ({
+      'Order Date': o.orderDate ? new Date(o.orderDate).toLocaleDateString('en-IN') : '',
+      'Order ID': o.orderNumber || '',
+      'Customer': o.customerName || '',
+      'Mobile No.': o.mobileNo || '',
+      'Item(s)': (o.lineItems || []).map((li) => li.name).filter(Boolean).join(', '),
+      'Qty': o.totalQty ?? (o.lineItems || []).reduce((s, li) => s + (li.quantity || 0), 0),
+      'Pickup Date': o.pickupDate ? new Date(o.pickupDate).toLocaleDateString('en-IN') : '',
+      'Est. Delivery': o.estimatedDeliveryDate ? new Date(o.estimatedDeliveryDate).toLocaleDateString('en-IN') : '',
+      'Status': o.packagedStatus || '',
+      'Payment Mode': o.paymentMode || '',
+      'Order Value': o.orderValue ?? '',
+      'City': o.shippingAddress?.city || '',
+      'State': o.shippingAddress?.state || '',
+      'Pincode': o.shippingAddress?.pincode || '',
+    }));
+
+    const worksheet = XLSX.utils.json_to_sheet(rows);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Selected Orders');
+    const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+
+    const filename = `orders-export-${new Date().toISOString().slice(0, 10)}.xlsx`;
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(buffer);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
