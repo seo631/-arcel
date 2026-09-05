@@ -7,9 +7,9 @@ const STATUS_COLORS = {
   'RTO Initiated': 'var(--status-rto)',
   'RTO In Transit': 'var(--status-rto)',
   'RTO Delivered': 'var(--status-rto)',
-  'Failed Delivery': 'var(--status-delayed)',
   'Cancelled': 'var(--status-rto)',
   'Lost': 'var(--status-rto)',
+  'Failed Delivery': 'var(--status-rto)',
   'Not Yet Shipped': 'var(--status-none)',
   'Unknown': 'var(--status-none)',
 };
@@ -17,7 +17,7 @@ const STATUS_COLORS = {
 const PACKAGED_STATUSES = [
   'Not Yet Shipped', 'Pending', 'Manifested', 'Dispatched', 'In Transit',
   'Delivered', 'RTO Initiated', 'RTO In Transit', 'RTO Delivered',
-  'Failed Delivery', 'Cancelled', 'Lost', 'Unknown',
+  'Cancelled', 'Lost', 'Failed Delivery', 'Unknown',
 ];
 
 const state = {
@@ -140,37 +140,26 @@ async function loadOrders() {
   updateSelectionToolbar();
 }
 
-function awbCellHTML(o) {
-  // Delhivery orders don't carry a trackingCompany (that's tracked via
-  // refId/the Delhivery API, not this field) — only show a tracking
-  // link here for orders shipped through some OTHER courier.
-  if (o.trackingCompany) {
-    const label = escapeHTML(`${o.trackingCompany}${o.trackingNumber ? ' · ' + o.trackingNumber : ''}`);
-    return o.trackingUrl
-      ? `<a href="${escapeHTML(o.trackingUrl)}" target="_blank" rel="noopener noreferrer">${label}</a>`
-      : label;
-  }
-  if (o.source === 'excel') return 'via Excel';
-  return '';
-}
-
-function statusCellHTML(o) {
-  const badge = `<span class="status-badge" style="background:${statusColor(o.packagedStatus)}">${escapeHTML(o.packagedStatus || 'Unknown')}</span>`;
-  // For non-Delhivery orders, show which courier that status came from —
-  // this is Shopify's own shipment_status, not a Delhivery API result,
-  // so it's worth distinguishing at a glance in the same column.
-  if (o.trackingCompany) {
-    return `${badge}<span class="status-courier-tag">${escapeHTML(o.trackingCompany)}</span>`;
-  }
-  return badge;
-}
-
 function rowHTML(o) {
   const items = (o.lineItems || [])
     .map((li) => `<span class="item-name">${escapeHTML(li.name)}</span>`)
     .join('');
   const qty = o.totalQty ?? (o.lineItems || []).reduce((s, li) => s + (li.quantity || 0), 0);
   const isChecked = state.selected.has(o.orderNumber);
+
+  // Tracking link only for a courier OTHER than Delhivery — Delhivery
+  // orders already have their own status pipeline, so this cell is the
+  // fallback for "some other courier partner" shipments where Shopify's
+  // fulfillment tracking is the only place the info lives.
+  let awbCell = '—';
+  if (o.courier && !/delhivery/i.test(o.courier)) {
+    const label = escapeHTML(o.trackingNumber || o.courier);
+    awbCell = o.trackingUrl
+      ? `<a href="${escapeHTML(o.trackingUrl)}" target="_blank" rel="noopener">${escapeHTML(o.courier)}: ${label}</a>`
+      : `${escapeHTML(o.courier)}: ${label}`;
+  } else if (o.source === 'excel') {
+    awbCell = 'via Excel';
+  }
 
   return `
     <tr class="${isChecked ? 'row-selected' : ''}">
@@ -184,10 +173,10 @@ function rowHTML(o) {
       <td>${qty || '—'}</td>
       <td>${fmtDate(o.pickupDate)}</td>
       <td>${fmtDate(o.deliveredAt || o.estimatedDeliveryDate)}</td>
-      <td class="status-cell">${statusCellHTML(o)}</td>
+      <td><span class="status-badge" style="background:${statusColor(o.packagedStatus)}">${escapeHTML(o.packagedStatus || 'Unknown')}</span></td>
       <td>${fmtDate(o.cancelledAt)}</td>
       <td>${escapeHTML(o.paymentMode || '—')}</td>
-      <td class="awb-cell">${awbCellHTML(o)}</td>
+      <td class="awb-cell">${awbCell}</td>
     </tr>
   `;
 }
@@ -380,18 +369,6 @@ async function openDrawer(orderNumber) {
   try {
     const order = await fetchJSON(`/api/orders/${orderNumber}`);
     title.textContent = `Scan history — #${order.orderNumber}`;
-
-    if (order.trackingCompany) {
-      const link = order.trackingUrl
-        ? `<a href="${escapeHTML(order.trackingUrl)}" target="_blank" rel="noopener noreferrer">${escapeHTML(order.trackingNumber || 'Track')}</a>`
-        : escapeHTML(order.trackingNumber || '—');
-      body.innerHTML = `
-        <p>Shipped via <strong>${escapeHTML(order.trackingCompany)}</strong> — tracked on Shopify, not Delhivery.</p>
-        <p>Tracking #: ${link}</p>
-        <p>Shopify shipment status: ${escapeHTML(order.shopifyShipmentStatus || '—')}</p>
-      `;
-      return;
-    }
 
     if (!order.scanHistory || !order.scanHistory.length) {
       body.innerHTML = `<p>No scan events yet${order.syncError ? ` — last sync error: ${escapeHTML(order.syncError)}` : ''}.</p>`;

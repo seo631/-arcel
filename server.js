@@ -2,11 +2,9 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
-const cron = require('node-cron');
 
 const connectDB = require('./config/db');
 const apiRoutes = require('./routes/api');
-const { runSync, runShopifySync, runDelhiveryTracking } = require('./services/syncService');
 
 const app = express();
 app.use(cors());
@@ -14,6 +12,8 @@ app.use(express.json());
 
 // Render (and any uptime monitor) can hit this without touching Mongo/APIs.
 app.get('/healthz', (req, res) => res.json({ ok: true, uptime: process.uptime() }));
+// Plain health check some monitors expect a minimal { status: "ok" } body from.
+app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
 app.use('/api', apiRoutes);
 app.use(express.static(path.join(__dirname, 'public')));
@@ -27,38 +27,13 @@ async function start() {
     console.log(`[server] Dashboard running on port ${PORT}`);
   });
 
-  // Kick off one combined sync (Shopify + Delhivery) shortly after boot so
-  // the dashboard has fresh data immediately, then the two pieces run on
-  // their own separate schedules below.
-  setTimeout(() => {
-    runSync().catch((err) => console.error('[sync] initial sync failed:', err.message));
-  }, 3000);
-
-  // Shopify order pull — frequent, since new orders/cancellations should
-  // show up quickly. Never touches Delhivery/courier status.
-  const shopifyIntervalMin = Number(process.env.SYNC_INTERVAL_MINUTES || 30);
-  cron.schedule(
-    `*/${shopifyIntervalMin} * * * *`,
-    () => {
-      runShopifySync().catch((err) => console.error('[sync:shopify] scheduled sync failed:', err.message));
-    },
-    { timezone: 'Asia/Kolkata' }
-  );
-
-  // Delhivery/courier status check — deliberately much less frequent,
-  // since it's an API call per pending order and the status doesn't
-  // change minute to minute. Runs at minute 0 every N hours, IST.
-  // Render's servers run in UTC by default, so without an explicit
-  // timezone this would silently fire 5.5 hours off from what the
-  // schedule looks like.
-  const deliveryIntervalHours = Number(process.env.DELIVERY_STATUS_INTERVAL_HOURS || 12);
-  cron.schedule(
-    `0 */${deliveryIntervalHours} * * *`,
-    () => {
-      runDelhiveryTracking().catch((err) => console.error('[sync:delhivery] scheduled check failed:', err.message));
-    },
-    { timezone: 'Asia/Kolkata' }
-  );
+  // No automatic sync on boot or on a schedule — syncing is 100% manual,
+  // triggered only by the "Sync Shopify Orders" / "Update Delivery
+  // Status" / "Check Delivery Status" buttons in the dashboard. This
+  // matters because the host puts the server to sleep when idle, and
+  // every wake-up is a fresh boot — an automatic sync here would have
+  // silently kicked off a full 1000+ order Delhivery check on every
+  // single wake-up, which is exactly what was happening before.
 }
 
 start().catch((err) => {

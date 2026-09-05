@@ -1,5 +1,5 @@
 const Order = require('../models/Order');
-const { fetchOrdersSince, resolveDefaultSince } = require('./shopifyService');
+const { fetchOrdersSince, resolveDefaultSince, isDelhiveryCourier, SHIPMENT_STATUS_MAP } = require('./shopifyService');
 const { fetchByOrderNumber, TERMINAL_STATUSES } = require('./delhiveryService');
 
 const DELAY_MS = 300; // pacing between Delhivery calls, same as your Apps Script
@@ -24,18 +24,11 @@ async function syncShopifyOrders(sinceISO, untilISO) {
 
   for (const order of orders) {
     const set = { ...order };
-    delete set.nonDelhiveryPackagedStatus; // computed field, not a schema column
-
-    // Non-Delhivery courier (e.g. Shiprocket): Shopify's own fulfillment
-    // record already carries live tracking + status, so there's nothing
-    // to poll Delhivery for. Apply that status directly here rather than
-    // waiting on syncDelhiveryTracking, which will skip this order
-    // entirely (see the queue query below). Terminal Delhivery-style
-    // statuses set via a manual override are left alone — same
-    // reasoning as the cancellation guard just below.
-    if (order.nonDelhiveryPackagedStatus) {
-      set.packagedStatus = order.nonDelhiveryPackagedStatus;
-      if (order.nonDelhiveryPackagedStatus === 'Delivered') set.deliveredAt = new Date();
+    const needsExisting = order.cancelledAt || (order.courier && !isDelhiveryCourier(order.courier));
+    let existingStatus;
+    if (needsExisting) {
+      const existing = await Order.findOne({ shopifyId: order.shopifyId }).select('packagedStatus').lean();
+      existingStatus = existing?.packagedStatus;
     }
 
     // A Shopify-cancelled order will never actually ship, so it would
@@ -46,12 +39,19 @@ async function syncShopifyOrders(sinceISO, untilISO) {
     // recorded in Shopify after the fact (a return, a refund) shouldn't
     // clobber what actually happened to the physical shipment.
     if (order.cancelledAt) {
-      const existing = await Order.findOne({ shopifyId: order.shopifyId }).select('packagedStatus').lean();
-      const currentStatus = existing?.packagedStatus;
-      if (!currentStatus || currentStatus === 'Not Yet Shipped') {
+      if (!existingStatus || existingStatus === 'Not Yet Shipped') {
         set.packagedStatus = 'Cancelled';
         autoCancelled += 1;
       }
+    } else if (order.courier && !isDelhiveryCourier(order.courier)) {
+      // Shipped via some OTHER courier partner (not Delhivery) — our
+      // Delhivery API polling will never find this order, so Shopify's
+      // own fulfillment tracking (shipment_status) is the only source of
+      // truth for it, same info shown on the order's page in Shopify.
+      const mapped = SHIPMENT_STATUS_MAP[order.shopifyShipmentStatus];
+      set.packagedStatus =
+        mapped || (existingStatus && existingStatus !== 'Not Yet Shipped' ? existingStatus : 'Dispatched');
+      if (set.packagedStatus === 'Delivered') set.deliveredAt = new Date();
     }
 
     const result = await Order.findOneAndUpdate(
@@ -81,18 +81,15 @@ async function syncShopifyOrders(sinceISO, untilISO) {
  * the UI can show "checked X of Y" instead of an indefinite spinner.
  */
 async function syncDelhiveryTracking(orderNumbers) {
-  // The full queue (no orderNumbers given) skips orders already known to
-  // be on a non-Delhivery courier — those are tracked via Shopify's own
-  // fulfillment data (see syncShopifyOrders), not the Delhivery API, so
-  // polling Delhivery for them would only ever come back notFound. The
-  // "selected" path (orderNumbers given) is left unfiltered on purpose —
-  // if you explicitly pick a row and hit "Check Delivery Status", it
-  // should still try Delhivery rather than silently no-op.
   const query = orderNumbers && orderNumbers.length
     ? { orderNumber: { $in: orderNumbers } }
     : {
         packagedStatus: { $nin: TERMINAL_STATUSES },
-        $or: [{ trackingCompany: { $exists: false } }, { trackingCompany: '' }],
+        // Skip orders shipped via some OTHER courier partner — Delhivery's
+        // API will never find them, so querying it is a wasted call every
+        // single time. Their status comes from Shopify's own fulfillment
+        // tracking instead (see syncShopifyOrders' courier handling).
+        $or: [{ courier: { $exists: false } }, { courier: null }, { courier: /delhivery/i }],
       };
   const pending = await Order.find(query).select('_id orderNumber pickupDate packagedStatus');
 

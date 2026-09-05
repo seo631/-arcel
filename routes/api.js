@@ -17,7 +17,7 @@ const { importFromWorkbook } = require('../services/excelImportService');
 const PACKAGED_STATUSES = [
   'Not Yet Shipped', 'Pending', 'Manifested', 'Dispatched', 'In Transit',
   'Delivered', 'RTO Initiated', 'RTO In Transit', 'RTO Delivered',
-  'Failed Delivery', 'Cancelled', 'Lost', 'Unknown',
+  'Cancelled', 'Lost', 'Failed Delivery', 'Unknown',
 ];
 
 // A bare "YYYY-MM-DD" from an <input type="date"> means midnight at the
@@ -55,7 +55,6 @@ function buildOrderQuery({ search, status, paymentMode, from, to }) {
       { customerName: re },
       { mobileNo: re },
       { 'lineItems.name': re },
-      { trackingNumber: re },
     ];
   }
   if (status) query.packagedStatus = status;
@@ -136,6 +135,21 @@ router.post('/sync', async (req, res) => {
   const { since, until } = req.body || {};
   res.json({ message: 'Sync started', range: { since: since || 'default', until: until || null } });
   runSync({ since: normalizeSince(since), until: normalizeUntil(until) }).catch((err) => console.error('[sync] failed:', err.message));
+});
+
+// GET /api/cron/shopify-sync
+// A GET (not POST) so any uptime monitor can hit it directly on a
+// schedule — most free monitors only support GET. Does the SAME thing as
+// the "Sync Shopify Orders" button: pulls new orders, never touches
+// Delhivery, so it's cheap enough to run every 15-30 min without ever
+// triggering the slow 1000+-order Delhivery check. Safe to call
+// repeatedly — if a sync is already running it just no-ops.
+router.get('/cron/shopify-sync', (req, res) => {
+  if (isSyncInProgress()) {
+    return res.status(202).json({ status: 'skipped', reason: 'A sync is already running' });
+  }
+  res.json({ status: 'started' });
+  runShopifySync().catch((err) => console.error('[cron:shopify-sync] failed:', err.message));
 });
 
 // POST /api/sync/shopify  { since?: "2026-08-01", until?: "2026-08-31" }
@@ -258,8 +272,6 @@ router.post('/orders/export', async (req, res) => {
       'Pickup Date': o.pickupDate ? new Date(o.pickupDate).toLocaleDateString('en-IN') : '',
       'Est. Delivery': o.estimatedDeliveryDate ? new Date(o.estimatedDeliveryDate).toLocaleDateString('en-IN') : '',
       'Status': o.packagedStatus || '',
-      'Courier': o.trackingCompany || (o.source === 'excel' ? '' : 'Delhivery'),
-      'Tracking No.': o.trackingNumber || '',
       'Payment Mode': o.paymentMode || '',
       'Order Value': o.orderValue ?? '',
       'City': o.shippingAddress?.city || '',
