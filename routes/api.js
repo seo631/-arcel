@@ -95,20 +95,6 @@ router.get('/orders', async (req, res) => {
   }
 });
 
-// GET /api/orders/ids?search=&status=&paymentMode=&from=&to=
-// Returns every orderNumber matching the current filters, ignoring
-// pagination — powers "Select all N matching orders" (selecting beyond
-// just the current page).
-router.get('/orders/ids', async (req, res) => {
-  try {
-    const query = buildOrderQuery(req.query);
-    const orderNumbers = await Order.find(query).distinct('orderNumber');
-    res.json({ orderNumbers, total: orderNumbers.length });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
 // GET /api/orders/:orderNumber (full detail incl. scan history)
 router.get('/orders/:orderNumber', async (req, res) => {
   try {
