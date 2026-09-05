@@ -110,13 +110,13 @@ async function loadOrders() {
   if (state.to) params.set('to', state.to);
 
   const body = document.getElementById('ordersBody');
-  body.innerHTML = '<tr><td colspan="13" class="empty-state">Loading…</td></tr>';
+  body.innerHTML = '<tr><td colspan="14" class="empty-state">Loading…</td></tr>';
 
   const data = await fetchJSON(`/api/orders?${params}`);
   state.total = data.total || 0;
 
   if (!data.orders.length) {
-    body.innerHTML = '<tr><td colspan="13" class="empty-state">No orders match these filters.</td></tr>';
+    body.innerHTML = '<tr><td colspan="14" class="empty-state">No orders match these filters.</td></tr>';
   } else {
     body.innerHTML = data.orders.map(rowHTML).join('');
   }
@@ -159,6 +159,7 @@ function rowHTML(o) {
       <td>${fmtDate(o.pickupDate)}</td>
       <td>${fmtDate(o.deliveredAt || o.estimatedDeliveryDate)}</td>
       <td><span class="status-badge" style="background:${statusColor(o.packagedStatus)}">${escapeHTML(o.packagedStatus || 'Unknown')}</span></td>
+      <td>${fmtDate(o.cancelledAt)}</td>
       <td>${escapeHTML(o.paymentMode || '—')}</td>
       <td class="awb-cell">${escapeHTML(o.source === 'excel' ? 'via Excel' : '')}</td>
     </tr>

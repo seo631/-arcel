@@ -61,8 +61,8 @@ function buildOrderQuery({ search, status, paymentMode, from, to }) {
   if (paymentMode) query.paymentMode = paymentMode;
   if (from || to) {
     query.orderDate = {};
-    if (from) query.orderDate.$gte = new Date(from);
-    if (to) query.orderDate.$lte = new Date(to);
+    if (from) query.orderDate.$gte = new Date(normalizeSince(from));
+    if (to) query.orderDate.$lte = new Date(normalizeUntil(to));
   }
   return query;
 }
