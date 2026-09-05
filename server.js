@@ -6,7 +6,7 @@ const cron = require('node-cron');
 
 const connectDB = require('./config/db');
 const apiRoutes = require('./routes/api');
-const { runSync } = require('./services/syncService');
+const { runSync, runShopifySync, runDelhiveryTracking } = require('./services/syncService');
 
 const app = express();
 app.use(cors());
@@ -27,14 +27,26 @@ async function start() {
     console.log(`[server] Dashboard running on port ${PORT}`);
   });
 
-  // Kick off an initial sync shortly after boot, then repeat on a schedule.
+  // Kick off one combined sync (Shopify + Delhivery) shortly after boot so
+  // the dashboard has fresh data immediately, then the two pieces run on
+  // their own separate schedules below.
   setTimeout(() => {
     runSync().catch((err) => console.error('[sync] initial sync failed:', err.message));
   }, 3000);
 
-  const intervalMin = Number(process.env.SYNC_INTERVAL_MINUTES || 30);
-  cron.schedule(`*/${intervalMin} * * * *`, () => {
-    runSync().catch((err) => console.error('[sync] scheduled sync failed:', err.message));
+  // Shopify order pull — frequent, since new orders/cancellations should
+  // show up quickly. Never touches Delhivery/courier status.
+  const shopifyIntervalMin = Number(process.env.SYNC_INTERVAL_MINUTES || 30);
+  cron.schedule(`*/${shopifyIntervalMin} * * * *`, () => {
+    runShopifySync().catch((err) => console.error('[sync:shopify] scheduled sync failed:', err.message));
+  });
+
+  // Delhivery/courier status check — deliberately much less frequent,
+  // since it's an API call per pending order and the status doesn't
+  // change minute to minute. Runs at minute 0 every N hours.
+  const deliveryIntervalHours = Number(process.env.DELIVERY_STATUS_INTERVAL_HOURS || 12);
+  cron.schedule(`0 */${deliveryIntervalHours} * * *`, () => {
+    runDelhiveryTracking().catch((err) => console.error('[sync:delhivery] scheduled check failed:', err.message));
   });
 }
 

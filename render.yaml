@@ -28,5 +28,7 @@ services:
         sync: false
       - key: SYNC_INTERVAL_MINUTES
         value: "30"
+      - key: DELIVERY_STATUS_INTERVAL_HOURS
+        value: "12"
       - key: NODE_VERSION
         value: "20"

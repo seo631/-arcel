@@ -25,8 +25,12 @@ plus a Scan History drawer per order.
 
 Difference from Apps Script: Node isn't bound by its 6-minute execution
 cap, so one sync run works through the whole pending queue at the same
-safe pace instead of needing manual "next 50" clicks. Runs on a
-schedule (`SYNC_INTERVAL_MINUTES`) or on demand from the dashboard.
+safe pace instead of needing manual "next 50" clicks. The Shopify order
+pull runs on its own schedule (`SYNC_INTERVAL_MINUTES`, default 30 min);
+the Delhivery/courier status check runs on a separate, much less
+frequent schedule (`DELIVERY_STATUS_INTERVAL_HOURS`, default 12 hours)
+since it's an API call per pending order. Either can also be triggered
+on demand from the dashboard.
 
 ## The date filter
 
@@ -114,8 +118,9 @@ In Render → your service → **Environment**, add:
 | `MONGODB_URI` | the connection string from Step 2 |
 
 (`SHOPIFY_API_VERSION`, `DELHIVERY_BASE_URL`, `DELHIVERY_ORDER_ID_PREFIX`,
-`ORDER_LOOKBACK_DAYS`, and `SYNC_INTERVAL_MINUTES` already have sensible
-defaults in `render.yaml` / the code — only change them if you need to.)
+`ORDER_LOOKBACK_DAYS`, `SYNC_INTERVAL_MINUTES`, and
+`DELIVERY_STATUS_INTERVAL_HOURS` already have sensible defaults in
+`render.yaml` / the code — only change them if you need to.)
 
 ### 5. Deploy and check
 
