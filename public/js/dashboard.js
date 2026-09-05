@@ -147,16 +147,17 @@ function rowHTML(o) {
   const qty = o.totalQty ?? (o.lineItems || []).reduce((s, li) => s + (li.quantity || 0), 0);
   const isChecked = state.selected.has(o.orderNumber);
 
-  // Tracking link only for a courier OTHER than Delhivery — Delhivery
-  // orders already have their own status pipeline, so this cell is the
-  // fallback for "some other courier partner" shipments where Shopify's
-  // fulfillment tracking is the only place the info lives.
+  // Tracking link for cross-checking — shown for ANY order with tracking
+  // info from Shopify's fulfillment, not just non-Delhivery couriers, so
+  // you can always jump straight to the carrier's own tracking page even
+  // when our automated Delhivery/Shopify status lookups disagree with it.
   let awbCell = '—';
-  if (o.courier && !/delhivery/i.test(o.courier)) {
-    const label = escapeHTML(o.trackingNumber || o.courier);
+  if (o.trackingNumber || o.trackingUrl) {
+    const label = escapeHTML(o.trackingNumber || 'Track');
+    const courierLabel = o.courier ? `${escapeHTML(o.courier)}: ` : '';
     awbCell = o.trackingUrl
-      ? `<a href="${escapeHTML(o.trackingUrl)}" target="_blank" rel="noopener">${escapeHTML(o.courier)}: ${label}</a>`
-      : `${escapeHTML(o.courier)}: ${label}`;
+      ? `<a href="${escapeHTML(o.trackingUrl)}" target="_blank" rel="noopener">${courierLabel}${label}</a>`
+      : `${courierLabel}${label}`;
   } else if (o.source === 'excel') {
     awbCell = 'via Excel';
   }
@@ -302,7 +303,7 @@ document.getElementById('checkSelectedDelhiveryBtn').onclick = async () => {
     const d = summary.lastSync?.delhivery;
     note.className = 'sync-tool-note ok';
     note.textContent = d
-      ? `Checked ${d.checked}, updated ${d.updated}, not found ${d.notFound}, errors ${d.errors}.`
+      ? `Checked ${d.checked}, updated ${d.updated}${d.fromShopifyFallback ? ` (${d.fromShopifyFallback} from Shopify)` : ''}, not found ${d.notFound}, errors ${d.errors}.`
       : 'Done.';
     loadSummary();
     loadOrders();

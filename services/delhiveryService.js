@@ -28,22 +28,20 @@ function formatScanDate(value) {
 }
 
 /**
- * One order per call, exactly like your Apps Script — Delhivery's
- * ref_ids lookup, token passed as a query param (not a header).
- * Returns a normalized result, or { error }, { notFound: true }, or
- * { rateLimited: true, retryAfterSeconds }.
+ * Runs one Delhivery packages/json lookup with the given query params
+ * (either `{ ref_ids }` or `{ waybill }`) and normalizes the response.
+ * Shared by ref-id and waybill lookups below.
  */
-async function fetchByOrderNumber(orderNumber) {
+async function queryDelhivery(extraParams) {
   const token = process.env.DELHIVERY_API_TOKEN;
   if (!token) throw new Error('DELHIVERY_API_TOKEN missing in .env');
 
-  const refId = ORDER_ID_PREFIX + orderNumber;
   const url = `${baseURL()}/api/v1/packages/json/`;
 
   let res;
   try {
     res = await axios.get(url, {
-      params: { ref_ids: refId, token },
+      params: { ...extraParams, token },
       timeout: 20000,
       validateStatus: () => true, // handle non-200 ourselves, same as muteHttpExceptions
     });
@@ -88,7 +86,6 @@ async function fetchByOrderNumber(orderNumber) {
   }
 
   return {
-    refId,
     pickupDate: toDDMMYYYY(shipment.PickUpDate),
     // PromisedDeliveryDate first (Delhivery's committed SLA date), then
     // ExpectedDeliveryDate as the fallback live ETA — matches your script.
@@ -97,6 +94,29 @@ async function fetchByOrderNumber(orderNumber) {
     ndrReason: status.Status && status.Status !== 'Delivered' ? status.Instructions : null,
     scanHistory,
   };
+}
+
+/**
+ * One order per call, exactly like your Apps Script — Delhivery's
+ * ref_ids lookup first (our own "NEAT-<orderNumber>" convention, for
+ * orders booked directly with Delhivery). If that comes back not-found
+ * AND we have a real AWB from Shopify's fulfillment tracking (`waybill`
+ * — e.g. an order routed through Shiprocket that still ends up on
+ * Delhivery's network under Delhivery's own AWB, not our ref_id), retry
+ * by that AWB directly before giving up. Returns a normalized result, or
+ * { error }, { notFound: true }, or { rateLimited, retryAfterSeconds }.
+ */
+async function fetchByOrderNumber(orderNumber, waybill) {
+  const refId = ORDER_ID_PREFIX + orderNumber;
+  const byRef = await queryDelhivery({ ref_ids: refId });
+  if (!byRef.notFound) return { ...byRef, refId, lookupMethod: 'ref_id' };
+
+  if (waybill) {
+    const byWaybill = await queryDelhivery({ waybill });
+    if (!byWaybill.notFound) return { ...byWaybill, refId: waybill, lookupMethod: 'waybill' };
+  }
+
+  return byRef; // still { notFound: true } (or the ref_id lookup's error)
 }
 
 module.exports = { fetchByOrderNumber, TERMINAL_STATUSES };

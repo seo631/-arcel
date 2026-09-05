@@ -91,11 +91,12 @@ async function syncDelhiveryTracking(orderNumbers) {
         // tracking instead (see syncShopifyOrders' courier handling).
         $or: [{ courier: { $exists: false } }, { courier: null }, { courier: /delhivery/i }],
       };
-  const pending = await Order.find(query).select('_id orderNumber pickupDate packagedStatus');
+  const pending = await Order.find(query).select('_id orderNumber pickupDate packagedStatus trackingNumber shopifyShipmentStatus');
 
   let checked = 0;
   let updatedCount = 0;
   let notFound = 0;
+  let fromShopifyFallback = 0;
   let errors = 0;
   syncProgress = { checked: 0, total: pending.length };
 
@@ -103,12 +104,17 @@ async function syncDelhiveryTracking(orderNumbers) {
     for (const order of pending) {
       checked += 1;
       syncProgress.checked = checked;
-      let result = await fetchByOrderNumber(order.orderNumber);
+      // Try Delhivery's ref_id lookup first (our own "NEAT-<orderNumber>"
+      // convention). If that misses, also try the real AWB from Shopify's
+      // fulfillment tracking — this catches orders booked through an
+      // aggregator (e.g. Shiprocket) that still ship on Delhivery's
+      // network under Delhivery's own AWB, which our ref_id never matches.
+      let result = await fetchByOrderNumber(order.orderNumber, order.trackingNumber);
 
       if (result.rateLimited) {
         const wait = Math.min(result.retryAfterSeconds, 60);
         await sleep(wait * 1000);
-        result = await fetchByOrderNumber(order.orderNumber);
+        result = await fetchByOrderNumber(order.orderNumber, order.trackingNumber);
       }
 
       if (result.error) {
@@ -118,7 +124,19 @@ async function syncDelhiveryTracking(orderNumbers) {
         continue;
       }
       if (result.notFound) {
-        notFound += 1;
+        // Last resort: Shopify's own carrier-reported shipment_status
+        // (the same info shown on the order's page in Shopify) — covers
+        // shipments Delhivery's public tracking API won't recognize under
+        // either lookup, e.g. ones booked entirely through a third party.
+        const mapped = SHIPMENT_STATUS_MAP[order.shopifyShipmentStatus];
+        if (mapped && mapped !== order.packagedStatus) {
+          const set = { packagedStatus: mapped, lastSyncedAt: new Date(), syncError: null };
+          if (mapped === 'Delivered') set.deliveredAt = new Date();
+          await Order.updateOne({ _id: order._id }, { $set: set });
+          fromShopifyFallback += 1;
+        } else {
+          notFound += 1;
+        }
         await sleep(DELAY_MS);
         continue;
       }
@@ -145,7 +163,7 @@ async function syncDelhiveryTracking(orderNumbers) {
     syncProgress = null;
   }
 
-  return { checked, updated: updatedCount, notFound, errors, remaining: 0 };
+  return { checked, updated: updatedCount, fromShopifyFallback, notFound, errors, remaining: 0 };
 }
 
 async function runSync({ since, until } = {}) {
