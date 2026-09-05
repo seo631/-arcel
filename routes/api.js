@@ -7,8 +7,10 @@ const {
   runSync,
   runShopifySync,
   runDelhiveryTracking,
+  runDelhiverySelected,
   getLastSyncSummary,
   isSyncInProgress,
+  getSyncProgress,
 } = require('../services/syncService');
 const { importFromWorkbook } = require('../services/excelImportService');
 
@@ -17,6 +19,23 @@ const PACKAGED_STATUSES = [
   'Delivered', 'RTO Initiated', 'RTO In Transit', 'RTO Delivered',
   'Cancelled', 'Lost', 'Unknown',
 ];
+
+// A bare "YYYY-MM-DD" from an <input type="date"> means midnight at the
+// START of that day. Shopify's created_at_min/max are exact instants, so
+// using the bare date for `until` silently excludes almost the entire
+// day (everything created after 00:00:00). `since` is fine as-is (start
+// of day is what "from" should mean) — only `until` needs pushing to the
+// end of that day. Anchored to IST since that's the store's timezone.
+function normalizeUntil(until) {
+  if (!until) return until;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(until)) return `${until}T23:59:59.999+05:30`;
+  return until;
+}
+function normalizeSince(since) {
+  if (!since) return since;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(since)) return `${since}T00:00:00.000+05:30`;
+  return since;
+}
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -86,7 +105,12 @@ router.get('/summary', async (req, res) => {
       { $group: { _id: '$packagedStatus', count: { $sum: 1 } } },
       { $sort: { count: -1 } },
     ]);
-    res.json({ statusCounts: agg, lastSync: getLastSyncSummary(), syncInProgress: isSyncInProgress() });
+    res.json({
+      statusCounts: agg,
+      lastSync: getLastSyncSummary(),
+      syncInProgress: isSyncInProgress(),
+      syncProgress: getSyncProgress(),
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -102,7 +126,7 @@ router.post('/sync', async (req, res) => {
   }
   const { since, until } = req.body || {};
   res.json({ message: 'Sync started', range: { since: since || 'default', until: until || null } });
-  runSync({ since, until }).catch((err) => console.error('[sync] failed:', err.message));
+  runSync({ since: normalizeSince(since), until: normalizeUntil(until) }).catch((err) => console.error('[sync] failed:', err.message));
 });
 
 // POST /api/sync/shopify  { since?: "2026-08-01", until?: "2026-08-31" }
@@ -114,20 +138,39 @@ router.post('/sync/shopify', async (req, res) => {
   }
   const { since, until } = req.body || {};
   res.json({ message: 'Shopify sync started', range: { since: since || 'default', until: until || null } });
-  runShopifySync({ since, until }).catch((err) => console.error('[sync:shopify] failed:', err.message));
+  runShopifySync({ since: normalizeSince(since), until: normalizeUntil(until) }).catch((err) => console.error('[sync:shopify] failed:', err.message));
 });
 
 // POST /api/sync/delhivery
 // "Update Delivery Status" button — checks LIVE tracking status at
 // Delhivery for every order not already Delivered/RTO Delivered/Cancelled,
 // and updates packagedStatus/scanHistory/etc. Does not touch Shopify or
-// pull in any new orders.
+// pull in any new orders. Can take a while with a large queue — poll
+// /api/summary's syncProgress for a live checked/total count.
 router.post('/sync/delhivery', async (req, res) => {
   if (isSyncInProgress()) {
     return res.status(202).json({ message: 'Sync already in progress' });
   }
   res.json({ message: 'Delivery status update started' });
   runDelhiveryTracking().catch((err) => console.error('[sync:delhivery] failed:', err.message));
+});
+
+// POST /api/sync/delhivery/selected  { orderNumbers: ["17111", ...] }
+// "Update Delivery Status" for just the checked rows — bypasses the
+// terminal-status filter (so it re-checks even a Delivered/Cancelled
+// order if you explicitly selected it) and skips the rest of the queue,
+// so a handful of orders finishes in seconds instead of waiting behind
+// everything else that's still "Not Yet Shipped".
+router.post('/sync/delhivery/selected', async (req, res) => {
+  if (isSyncInProgress()) {
+    return res.status(202).json({ message: 'Sync already in progress' });
+  }
+  const { orderNumbers } = req.body || {};
+  if (!Array.isArray(orderNumbers) || !orderNumbers.length) {
+    return res.status(400).json({ error: 'orderNumbers must be a non-empty array' });
+  }
+  res.json({ message: 'Delivery status check started', count: orderNumbers.length });
+  runDelhiverySelected(orderNumbers).catch((err) => console.error('[sync:delhivery:selected] failed:', err.message));
 });
 
 // POST /api/import/excel  (multipart form field name: "file")

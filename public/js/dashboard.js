@@ -56,12 +56,15 @@ async function loadSummary() {
   const SYNC_TYPE_LABEL = {
     shopify: 'Shopify sync',
     delhivery: 'Delivery status check',
+    'delhivery-selected': 'Delivery status check (selected)',
     full: 'Full sync',
   };
 
   const label = document.getElementById('lastSyncLabel');
   if (data.syncInProgress) {
-    label.textContent = 'Syncing…';
+    label.textContent = data.syncProgress
+      ? `Checking… ${data.syncProgress.checked}/${data.syncProgress.total}`
+      : 'Syncing…';
   } else if (data.lastSync?.finishedAt) {
     const kind = SYNC_TYPE_LABEL[data.lastSync.type] || 'Synced';
     label.textContent = `Last ${kind.toLowerCase()} ${new Date(data.lastSync.finishedAt).toLocaleTimeString('en-IN')}`;
@@ -249,14 +252,48 @@ document.getElementById('bulkUpdateBtn').onclick = async () => {
   }
 };
 
+// ---- Check Delivery Status for just the checked rows — fast, and works
+// even on an already-Delivered/Cancelled order since you picked it
+// explicitly. Skips the rest of the "Not Yet Shipped" queue entirely. ----
+document.getElementById('checkSelectedDelhiveryBtn').onclick = async () => {
+  const note = document.getElementById('bulkActionNote');
+  const btn = document.getElementById('checkSelectedDelhiveryBtn');
+  const orderNumbers = Array.from(state.selected);
+
+  if (!orderNumbers.length) return;
+
+  btn.disabled = true;
+  note.className = 'sync-tool-note';
+  note.textContent = `Checking ${orderNumbers.length} order(s)…`;
+  try {
+    await fetchJSON('/api/sync/delhivery/selected', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ orderNumbers }),
+    });
+    await waitForSyncToFinish();
+    const summary = await fetchJSON('/api/summary');
+    const d = summary.lastSync?.delhivery;
+    note.className = 'sync-tool-note ok';
+    note.textContent = d
+      ? `Checked ${d.checked}, updated ${d.updated}, not found ${d.notFound}, errors ${d.errors}.`
+      : 'Done.';
+    loadSummary();
+    loadOrders();
+  } catch (err) {
+    note.className = 'sync-tool-note error';
+    note.textContent = err.message;
+  } finally {
+    btn.disabled = false;
+  }
+};
+
 document.getElementById('downloadSelectedBtn').onclick = async () => {
   const note = document.getElementById('bulkActionNote');
   const btn = document.getElementById('downloadSelectedBtn');
   const orderNumbers = Array.from(state.selected);
 
   if (!orderNumbers.length) return;
-
-  btn.disabled = true;
   note.className = 'sync-tool-note';
   note.textContent = 'Preparing file…';
   try {
