@@ -56,10 +56,20 @@ const OrderSchema = new mongoose.Schema(
       enum: [
         'Not Yet Shipped', 'Pending', 'Manifested', 'Dispatched', 'In Transit',
         'Delivered', 'RTO Initiated', 'RTO In Transit', 'RTO Delivered',
-        'Cancelled', 'Lost', 'Unknown',
+        'Failed Delivery', 'Cancelled', 'Lost', 'Unknown',
       ],
       default: 'Not Yet Shipped',
     },
+
+    // --- Non-Delhivery courier side ---
+    // Shopify's own fulfillment record already carries tracking + status
+    // for shipments booked through any other courier (e.g. Shiprocket).
+    // trackingCompany is null/absent for Delhivery shipments (those are
+    // tracked via the Delhivery API path above, not this fallback).
+    trackingCompany: String, // fulfillments[].tracking_company, e.g. "Shiprocket"
+    trackingNumber: String, // fulfillments[].tracking_number
+    trackingUrl: String, // fulfillments[].tracking_url
+    shopifyShipmentStatus: String, // fulfillments[].shipment_status, Shopify's raw value
     scanHistory: [ScanEventSchema], // collapsed journey, oldest first
     ndrReason: String,
     cancelledAt: Date, // set from Shopify's cancelled_at — drives auto "Cancelled" status

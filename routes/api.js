@@ -17,7 +17,7 @@ const { importFromWorkbook } = require('../services/excelImportService');
 const PACKAGED_STATUSES = [
   'Not Yet Shipped', 'Pending', 'Manifested', 'Dispatched', 'In Transit',
   'Delivered', 'RTO Initiated', 'RTO In Transit', 'RTO Delivered',
-  'Cancelled', 'Lost', 'Unknown',
+  'Failed Delivery', 'Cancelled', 'Lost', 'Unknown',
 ];
 
 // A bare "YYYY-MM-DD" from an <input type="date"> means midnight at the
@@ -55,6 +55,7 @@ function buildOrderQuery({ search, status, paymentMode, from, to }) {
       { customerName: re },
       { mobileNo: re },
       { 'lineItems.name': re },
+      { trackingNumber: re },
     ];
   }
   if (status) query.packagedStatus = status;
@@ -257,6 +258,8 @@ router.post('/orders/export', async (req, res) => {
       'Pickup Date': o.pickupDate ? new Date(o.pickupDate).toLocaleDateString('en-IN') : '',
       'Est. Delivery': o.estimatedDeliveryDate ? new Date(o.estimatedDeliveryDate).toLocaleDateString('en-IN') : '',
       'Status': o.packagedStatus || '',
+      'Courier': o.trackingCompany || (o.source === 'excel' ? '' : 'Delhivery'),
+      'Tracking No.': o.trackingNumber || '',
       'Payment Mode': o.paymentMode || '',
       'Order Value': o.orderValue ?? '',
       'City': o.shippingAddress?.city || '',

@@ -39,8 +39,53 @@ function paymentModeOf(order) {
   return '';
 }
 
+// Shopify's fulfillments[].shipment_status values, mapped onto our own
+// packagedStatus enum so non-Delhivery orders slot into the same status
+// strip/filters/colors as Delhivery ones.
+const SHIPMENT_STATUS_MAP = {
+  label_printed: 'Manifested',
+  label_purchased: 'Manifested',
+  confirmed: 'Manifested',
+  ready_for_pickup: 'Pending',
+  picked_up: 'Dispatched',
+  in_transit: 'In Transit',
+  out_for_delivery: 'Dispatched',
+  attempted_delivery: 'Failed Delivery',
+  delivered: 'Delivered',
+  failure: 'Lost',
+};
+
+const DELHIVERY_NAME_RE = /delhivery/i;
+
+/**
+ * Pulls tracking info off the order's fulfillments — this is Shopify's own
+ * record of tracking_company/tracking_number/tracking_url/shipment_status,
+ * available for ANY courier the order was booked through (Shiprocket etc).
+ * Returns null when there's no fulfillment yet, or when the fulfillment
+ * IS Delhivery — that case stays on the existing Delhivery API tracking
+ * path instead of this fallback.
+ */
+function nonDelhiveryFulfillment(order) {
+  const fulfillments = order.fulfillments || [];
+  // Most recent fulfillment with a tracking company wins (an order can
+  // have several fulfillments, e.g. after a partial reship).
+  const withTracking = fulfillments.filter((f) => f.tracking_company);
+  if (!withTracking.length) return null;
+  const latest = withTracking[withTracking.length - 1];
+  if (DELHIVERY_NAME_RE.test(latest.tracking_company)) return null;
+
+  return {
+    trackingCompany: latest.tracking_company,
+    trackingNumber: latest.tracking_number || (latest.tracking_numbers || [])[0] || '',
+    trackingUrl: latest.tracking_url || (latest.tracking_urls || [])[0] || '',
+    shopifyShipmentStatus: latest.shipment_status || '',
+    packagedStatus: SHIPMENT_STATUS_MAP[latest.shipment_status] || 'Dispatched',
+  };
+}
+
 function normalizeOrder(order) {
   const address = order.shipping_address || {};
+  const courier = nonDelhiveryFulfillment(order);
   return {
     shopifyId: String(order.id),
     orderNumber: String(order.order_number),
@@ -69,6 +114,15 @@ function normalizeOrder(order) {
     },
     tags: (order.tags || '').split(',').map((t) => t.trim()).filter(Boolean),
     source: 'shopify',
+    // Present only when this order shipped via a non-Delhivery courier —
+    // syncService uses this to fall back to Shopify's own tracking/status
+    // instead of the Delhivery API, and to skip it from the Delhivery
+    // polling queue entirely.
+    trackingCompany: courier?.trackingCompany || '',
+    trackingNumber: courier?.trackingNumber || '',
+    trackingUrl: courier?.trackingUrl || '',
+    shopifyShipmentStatus: courier?.shopifyShipmentStatus || '',
+    nonDelhiveryPackagedStatus: courier?.packagedStatus || null,
   };
 }
 

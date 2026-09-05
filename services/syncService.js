@@ -24,6 +24,19 @@ async function syncShopifyOrders(sinceISO, untilISO) {
 
   for (const order of orders) {
     const set = { ...order };
+    delete set.nonDelhiveryPackagedStatus; // computed field, not a schema column
+
+    // Non-Delhivery courier (e.g. Shiprocket): Shopify's own fulfillment
+    // record already carries live tracking + status, so there's nothing
+    // to poll Delhivery for. Apply that status directly here rather than
+    // waiting on syncDelhiveryTracking, which will skip this order
+    // entirely (see the queue query below). Terminal Delhivery-style
+    // statuses set via a manual override are left alone — same
+    // reasoning as the cancellation guard just below.
+    if (order.nonDelhiveryPackagedStatus) {
+      set.packagedStatus = order.nonDelhiveryPackagedStatus;
+      if (order.nonDelhiveryPackagedStatus === 'Delivered') set.deliveredAt = new Date();
+    }
 
     // A Shopify-cancelled order will never actually ship, so it would
     // otherwise sit at "Not Yet Shipped" forever and keep getting queued
@@ -68,9 +81,19 @@ async function syncShopifyOrders(sinceISO, untilISO) {
  * the UI can show "checked X of Y" instead of an indefinite spinner.
  */
 async function syncDelhiveryTracking(orderNumbers) {
+  // The full queue (no orderNumbers given) skips orders already known to
+  // be on a non-Delhivery courier — those are tracked via Shopify's own
+  // fulfillment data (see syncShopifyOrders), not the Delhivery API, so
+  // polling Delhivery for them would only ever come back notFound. The
+  // "selected" path (orderNumbers given) is left unfiltered on purpose —
+  // if you explicitly pick a row and hit "Check Delivery Status", it
+  // should still try Delhivery rather than silently no-op.
   const query = orderNumbers && orderNumbers.length
     ? { orderNumber: { $in: orderNumbers } }
-    : { packagedStatus: { $nin: TERMINAL_STATUSES } };
+    : {
+        packagedStatus: { $nin: TERMINAL_STATUSES },
+        $or: [{ trackingCompany: { $exists: false } }, { trackingCompany: '' }],
+      };
   const pending = await Order.find(query).select('_id orderNumber pickupDate packagedStatus');
 
   let checked = 0;
