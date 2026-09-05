@@ -24,7 +24,10 @@ async function syncShopifyOrders(sinceISO, untilISO) {
 
   for (const order of orders) {
     const set = { ...order };
-    const needsExisting = order.cancelledAt || (order.courier && !isDelhiveryCourier(order.courier));
+    const needsExisting =
+      order.cancelledAt ||
+      (order.courier && !isDelhiveryCourier(order.courier)) ||
+      (!order.courier && order.shopifyFulfillmentStatus === 'fulfilled');
     let existingStatus;
     if (needsExisting) {
       const existing = await Order.findOne({ shopifyId: order.shopifyId }).select('packagedStatus').lean();
@@ -52,6 +55,17 @@ async function syncShopifyOrders(sinceISO, untilISO) {
       set.packagedStatus =
         mapped || (existingStatus && existingStatus !== 'Not Yet Shipped' ? existingStatus : 'Dispatched');
       if (set.packagedStatus === 'Delivered') set.deliveredAt = new Date();
+    } else if (!order.courier && order.shopifyFulfillmentStatus === 'fulfilled') {
+      // Fulfilled in Shopify but with NO courier/tracking attached at
+      // all — no AWB to check anywhere, which usually means it was
+      // handed to the customer directly (local/hand delivery) rather
+      // than shipped. Reflect that instead of leaving it stuck at
+      // "Not Yet Shipped" forever. Only applied while it hasn't already
+      // picked up a real status some other way.
+      if (!existingStatus || existingStatus === 'Not Yet Shipped') {
+        set.packagedStatus = 'Hand Delivered';
+        set.deliveredAt = new Date();
+      }
     }
 
     const result = await Order.findOneAndUpdate(

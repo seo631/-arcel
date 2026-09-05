@@ -1,7 +1,7 @@
 const axios = require('axios');
 
 const ORDER_ID_PREFIX = process.env.DELHIVERY_ORDER_ID_PREFIX || 'NEAT-';
-const TERMINAL_STATUSES = ['Delivered', 'RTO Delivered', 'Cancelled'];
+const TERMINAL_STATUSES = ['Delivered', 'RTO Delivered', 'Cancelled', 'Hand Delivered'];
 
 function baseURL() {
   return process.env.DELHIVERY_BASE_URL || 'https://track.delhivery.com';

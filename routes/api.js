@@ -16,7 +16,7 @@ const { importFromWorkbook } = require('../services/excelImportService');
 
 const PACKAGED_STATUSES = [
   'Not Yet Shipped', 'Pending', 'Manifested', 'Dispatched', 'In Transit',
-  'Delivered', 'RTO Initiated', 'RTO In Transit', 'RTO Delivered',
+  'Delivered', 'Hand Delivered', 'RTO Initiated', 'RTO In Transit', 'RTO Delivered',
   'Cancelled', 'Lost', 'Failed Delivery', 'Unknown',
 ];
 
@@ -262,22 +262,48 @@ router.post('/orders/export', async (req, res) => {
       .sort({ orderDate: -1 })
       .lean();
 
-    const rows = orders.map((o) => ({
-      'Order Date': o.orderDate ? new Date(o.orderDate).toLocaleDateString('en-IN') : '',
-      'Order ID': o.orderNumber || '',
-      'Customer': o.customerName || '',
-      'Mobile No.': o.mobileNo || '',
-      'Item(s)': (o.lineItems || []).map((li) => li.name).filter(Boolean).join(', '),
-      'Qty': o.totalQty ?? (o.lineItems || []).reduce((s, li) => s + (li.quantity || 0), 0),
-      'Pickup Date': o.pickupDate ? new Date(o.pickupDate).toLocaleDateString('en-IN') : '',
-      'Est. Delivery': o.estimatedDeliveryDate ? new Date(o.estimatedDeliveryDate).toLocaleDateString('en-IN') : '',
-      'Status': o.packagedStatus || '',
-      'Payment Mode': o.paymentMode || '',
-      'Order Value': o.orderValue ?? '',
-      'City': o.shippingAddress?.city || '',
-      'State': o.shippingAddress?.state || '',
-      'Pincode': o.shippingAddress?.pincode || '',
-    }));
+    const rows = orders.flatMap((o) => {
+      // Shared fields — identical across every row for this order.
+      const base = {
+        orderDate: o.orderDate ? new Date(o.orderDate).toLocaleDateString('en-IN') : '',
+        orderId: o.orderNumber || '',
+        customer: o.customerName || '',
+        mobile: o.mobileNo || '',
+        pickupDate: o.pickupDate ? new Date(o.pickupDate).toLocaleDateString('en-IN') : '',
+        estDelivery: o.estimatedDeliveryDate ? new Date(o.estimatedDeliveryDate).toLocaleDateString('en-IN') : '',
+        status: o.packagedStatus || '',
+        cancelledOn: o.cancelledAt ? new Date(o.cancelledAt).toLocaleDateString('en-IN') : '',
+        paymentMode: o.paymentMode || '',
+        orderValue: o.orderValue ?? '',
+        tracking: o.trackingNumber ? `${o.courier ? `${o.courier}: ` : ''}${o.trackingNumber}` : '',
+        city: o.shippingAddress?.city || '',
+        state: o.shippingAddress?.state || '',
+        pincode: o.shippingAddress?.pincode || '',
+      };
+
+      // One row PER line item — only Item Name and Qty differ between an
+      // order's rows, everything else (dates, customer, status, etc.)
+      // repeats identically, matching your original sheet's layout.
+      const items = o.lineItems && o.lineItems.length ? o.lineItems : [{ name: '', quantity: '' }];
+      return items.map((li) => ({
+        'Order Date': base.orderDate,
+        'Order ID': base.orderId,
+        'Customer': base.customer,
+        'Mobile No.': base.mobile,
+        'Item Name': li.name || '',
+        'Qty': li.quantity ?? '',
+        'Pickup Date': base.pickupDate,
+        'Est. Delivery': base.estDelivery,
+        'Status': base.status,
+        'Cancelled On': base.cancelledOn,
+        'Payment Mode': base.paymentMode,
+        'Order Value': base.orderValue,
+        'AWB / Tracking': base.tracking,
+        'City': base.city,
+        'State': base.state,
+        'Pincode': base.pincode,
+      }));
+    });
 
     const worksheet = XLSX.utils.json_to_sheet(rows);
     const workbook = XLSX.utils.book_new();

@@ -1,5 +1,6 @@
 const STATUS_COLORS = {
   'Delivered': 'var(--status-delivered)',
+  'Hand Delivered': 'var(--status-delivered)',
   'In Transit': 'var(--status-transit)',
   'Dispatched': 'var(--status-out)',
   'Pending': 'var(--status-pending)',
@@ -16,7 +17,7 @@ const STATUS_COLORS = {
 
 const PACKAGED_STATUSES = [
   'Not Yet Shipped', 'Pending', 'Manifested', 'Dispatched', 'In Transit',
-  'Delivered', 'RTO Initiated', 'RTO In Transit', 'RTO Delivered',
+  'Delivered', 'Hand Delivered', 'RTO Initiated', 'RTO In Transit', 'RTO Delivered',
   'Cancelled', 'Lost', 'Failed Delivery', 'Unknown',
 ];
 

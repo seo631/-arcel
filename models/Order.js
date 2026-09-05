@@ -65,7 +65,7 @@ const OrderSchema = new mongoose.Schema(
       enum: [
         'Not Yet Shipped', 'Pending', 'Manifested', 'Dispatched', 'In Transit',
         'Delivered', 'RTO Initiated', 'RTO In Transit', 'RTO Delivered',
-        'Cancelled', 'Lost', 'Unknown', 'Failed Delivery',
+        'Cancelled', 'Lost', 'Unknown', 'Failed Delivery', 'Hand Delivered',
       ],
       default: 'Not Yet Shipped',
     },
