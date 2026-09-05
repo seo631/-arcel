@@ -72,11 +72,24 @@
     <input id="toDate" type="date" />
   </label>
 
+  <select id="pageSizeSelect">
+    <option value="25">25 / page</option>
+    <option value="50" selected>50 / page</option>
+    <option value="100">100 / page</option>
+    <option value="200">200 / page</option>
+  </select>
+
+  <select id="sortSelect">
+    <option value="date_desc">Newest first</option>
+    <option value="date_asc">Oldest first</option>
+  </select>
+
   <button id="clearFilters" class="btn btn-ghost">Clear</button>
 </section>
 
 <section class="selection-toolbar" id="selectionToolbar" hidden>
   <span id="selectedCount">0 selected</span>
+  <button id="selectAllMatchingBtn" class="btn btn-ghost" hidden></button>
   <select id="bulkStatusSelect">
     <option value="">Set status to&hellip;</option>
   </select>

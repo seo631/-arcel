@@ -62,6 +62,7 @@ const OrderSchema = new mongoose.Schema(
     },
     scanHistory: [ScanEventSchema], // collapsed journey, oldest first
     ndrReason: String,
+    cancelledAt: Date, // set from Shopify's cancelled_at — drives auto "Cancelled" status
 
     // --- housekeeping ---
     source: { type: String, enum: ['shopify', 'excel'], default: 'shopify' },

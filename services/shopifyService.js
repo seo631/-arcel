@@ -61,6 +61,7 @@ function normalizeOrder(order) {
     currency: order.currency,
     shopifyFulfillmentStatus: order.fulfillment_status || 'unfulfilled',
     shopifyFinancialStatus: order.financial_status,
+    cancelledAt: order.cancelled_at || null,
     shippingAddress: {
       city: address.city,
       state: address.province,

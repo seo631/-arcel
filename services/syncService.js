@@ -20,18 +20,37 @@ async function syncShopifyOrders(sinceISO, untilISO) {
   const orders = await fetchOrdersSince(sinceISO, untilISO);
   let created = 0;
   let updated = 0;
+  let autoCancelled = 0;
 
   for (const order of orders) {
+    const set = { ...order };
+
+    // A Shopify-cancelled order will never actually ship, so it would
+    // otherwise sit at "Not Yet Shipped" forever and keep getting queued
+    // for a Delhivery check that can never find it. Auto-flip it to
+    // Cancelled — but ONLY if it hasn't already picked up a real
+    // Delhivery status (e.g. In Transit/Delivered), since a cancellation
+    // recorded in Shopify after the fact (a return, a refund) shouldn't
+    // clobber what actually happened to the physical shipment.
+    if (order.cancelledAt) {
+      const existing = await Order.findOne({ shopifyId: order.shopifyId }).select('packagedStatus').lean();
+      const currentStatus = existing?.packagedStatus;
+      if (!currentStatus || currentStatus === 'Not Yet Shipped') {
+        set.packagedStatus = 'Cancelled';
+        autoCancelled += 1;
+      }
+    }
+
     const result = await Order.findOneAndUpdate(
       { shopifyId: order.shopifyId },
-      { $set: order },
+      { $set: set },
       { upsert: true, new: true, rawResult: true }
     );
     if (result.lastErrorObject?.updatedExisting) updated += 1;
     else created += 1;
   }
 
-  return { totalOrders: orders.length, created, updated };
+  return { totalOrders: orders.length, created, updated, autoCancelled };
 }
 
 /**

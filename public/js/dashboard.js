@@ -22,11 +22,13 @@ const PACKAGED_STATUSES = [
 const state = {
   page: 1,
   limit: 50,
+  sort: 'date_desc',
   search: '',
   status: '',
   paymentMode: '',
   from: '',
   to: '',
+  total: 0, // total orders matching current filters (all pages), from last loadOrders()
   selected: new Set(), // orderNumbers checked via row/select-all checkboxes — persists across pages
 };
 
@@ -100,7 +102,7 @@ function renderStatusFilterOptions(counts) {
 }
 
 async function loadOrders() {
-  const params = new URLSearchParams({ page: state.page, limit: state.limit });
+  const params = new URLSearchParams({ page: state.page, limit: state.limit, sort: state.sort });
   if (state.search) params.set('search', state.search);
   if (state.status) params.set('status', state.status);
   if (state.paymentMode) params.set('paymentMode', state.paymentMode);
@@ -111,6 +113,7 @@ async function loadOrders() {
   body.innerHTML = '<tr><td colspan="13" class="empty-state">Loading…</td></tr>';
 
   const data = await fetchJSON(`/api/orders?${params}`);
+  state.total = data.total || 0;
 
   if (!data.orders.length) {
     body.innerHTML = '<tr><td colspan="13" class="empty-state">No orders match these filters.</td></tr>';
@@ -197,14 +200,57 @@ function updateSelectionToolbar() {
   document.getElementById('selectedCount').textContent = `${count} selected`;
   toolbar.hidden = count === 0;
   if (count === 0) document.getElementById('bulkActionNote').textContent = '';
+
+  const boxes = document.querySelectorAll('.row-checkbox');
+  const allOnPageChecked = boxes.length > 0 && Array.from(boxes).every((cb) => cb.checked);
+  const matchBtn = document.getElementById('selectAllMatchingBtn');
+  if (allOnPageChecked && state.total > boxes.length) {
+    matchBtn.hidden = false;
+    matchBtn.textContent = `Select all ${state.total} matching orders`;
+  } else {
+    matchBtn.hidden = true;
+  }
 }
 
 document.getElementById('selectAllCheckbox').addEventListener('change', (e) => {
-  document.querySelectorAll('.row-checkbox').forEach((cb) => {
-    cb.checked = e.target.checked;
-    toggleRowSelection(cb.dataset.id, e.target.checked);
+  const checked = e.target.checked;
+  const boxes = document.querySelectorAll('.row-checkbox');
+  boxes.forEach((cb) => {
+    cb.checked = checked;
+    if (checked) state.selected.add(cb.dataset.id);
+    else state.selected.delete(cb.dataset.id);
+    const row = cb.closest('tr');
+    if (row) row.classList.toggle('row-selected', checked);
   });
+  updateSelectAllState();
+  updateSelectionToolbar();
 });
+
+document.getElementById('selectAllMatchingBtn').onclick = async () => {
+  const btn = document.getElementById('selectAllMatchingBtn');
+  btn.disabled = true;
+  btn.textContent = 'Selecting…';
+  try {
+    const params = new URLSearchParams();
+    if (state.search) params.set('search', state.search);
+    if (state.status) params.set('status', state.status);
+    if (state.paymentMode) params.set('paymentMode', state.paymentMode);
+    if (state.from) params.set('from', state.from);
+    if (state.to) params.set('to', state.to);
+    const data = await fetchJSON(`/api/orders/ids?${params}`);
+    data.orderNumbers.forEach((id) => state.selected.add(id));
+    document.querySelectorAll('.row-checkbox').forEach((cb) => {
+      cb.checked = state.selected.has(cb.dataset.id);
+      cb.closest('tr')?.classList.toggle('row-selected', cb.checked);
+    });
+    updateSelectAllState();
+    updateSelectionToolbar();
+  } catch (err) {
+    alert(err.message);
+  } finally {
+    btn.disabled = false;
+  }
+};
 
 document.getElementById('clearSelectionBtn').onclick = () => {
   state.selected.clear();
@@ -406,6 +452,18 @@ document.getElementById('fromDate').addEventListener('change', (e) => {
 
 document.getElementById('toDate').addEventListener('change', (e) => {
   state.to = e.target.value;
+  state.page = 1;
+  loadOrders();
+});
+
+document.getElementById('pageSizeSelect').addEventListener('change', (e) => {
+  state.limit = Number(e.target.value) || 50;
+  state.page = 1;
+  loadOrders();
+});
+
+document.getElementById('sortSelect').addEventListener('change', (e) => {
+  state.sort = e.target.value;
   state.page = 1;
   loadOrders();
 });

@@ -46,35 +46,43 @@ const upload = multer({
   },
 });
 
-// GET /api/orders?search=&status=&paymentMode=&from=&to=&page=&limit=
+function buildOrderQuery({ search, status, paymentMode, from, to }) {
+  const query = {};
+  if (search) {
+    const re = new RegExp(search.trim(), 'i');
+    query.$or = [
+      { orderNumber: re },
+      { customerName: re },
+      { mobileNo: re },
+      { 'lineItems.name': re },
+    ];
+  }
+  if (status) query.packagedStatus = status;
+  if (paymentMode) query.paymentMode = paymentMode;
+  if (from || to) {
+    query.orderDate = {};
+    if (from) query.orderDate.$gte = new Date(from);
+    if (to) query.orderDate.$lte = new Date(to);
+  }
+  return query;
+}
+
+const SORT_OPTIONS = {
+  date_desc: { orderDate: -1 },
+  date_asc: { orderDate: 1 },
+};
+
+// GET /api/orders?search=&status=&paymentMode=&from=&to=&page=&limit=&sort=
 router.get('/orders', async (req, res) => {
   try {
-    const { search, status, paymentMode, from, to } = req.query;
     const page = Math.max(1, Number(req.query.page) || 1);
     const limit = Math.min(200, Number(req.query.limit) || 50);
-
-    const query = {};
-
-    if (search) {
-      const re = new RegExp(search.trim(), 'i');
-      query.$or = [
-        { orderNumber: re },
-        { customerName: re },
-        { mobileNo: re },
-        { 'lineItems.name': re },
-      ];
-    }
-    if (status) query.packagedStatus = status;
-    if (paymentMode) query.paymentMode = paymentMode;
-    if (from || to) {
-      query.orderDate = {};
-      if (from) query.orderDate.$gte = new Date(from);
-      if (to) query.orderDate.$lte = new Date(to);
-    }
+    const sort = SORT_OPTIONS[req.query.sort] || SORT_OPTIONS.date_desc;
+    const query = buildOrderQuery(req.query);
 
     const [orders, total] = await Promise.all([
       Order.find(query)
-        .sort({ orderDate: -1 })
+        .sort(sort)
         .skip((page - 1) * limit)
         .limit(limit)
         .lean(),
@@ -82,6 +90,20 @@ router.get('/orders', async (req, res) => {
     ]);
 
     res.json({ orders, total, page, limit, pages: Math.ceil(total / limit) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/orders/ids?search=&status=&paymentMode=&from=&to=
+// Returns every orderNumber matching the current filters, ignoring
+// pagination — powers "Select all N matching orders" (selecting beyond
+// just the current page).
+router.get('/orders/ids', async (req, res) => {
+  try {
+    const query = buildOrderQuery(req.query);
+    const orderNumbers = await Order.find(query).distinct('orderNumber');
+    res.json({ orderNumbers, total: orderNumbers.length });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
