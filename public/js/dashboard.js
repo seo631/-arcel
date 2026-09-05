@@ -154,6 +154,17 @@ function awbCellHTML(o) {
   return '';
 }
 
+function statusCellHTML(o) {
+  const badge = `<span class="status-badge" style="background:${statusColor(o.packagedStatus)}">${escapeHTML(o.packagedStatus || 'Unknown')}</span>`;
+  // For non-Delhivery orders, show which courier that status came from —
+  // this is Shopify's own shipment_status, not a Delhivery API result,
+  // so it's worth distinguishing at a glance in the same column.
+  if (o.trackingCompany) {
+    return `${badge}<span class="status-courier-tag">${escapeHTML(o.trackingCompany)}</span>`;
+  }
+  return badge;
+}
+
 function rowHTML(o) {
   const items = (o.lineItems || [])
     .map((li) => `<span class="item-name">${escapeHTML(li.name)}</span>`)
@@ -173,7 +184,7 @@ function rowHTML(o) {
       <td>${qty || '—'}</td>
       <td>${fmtDate(o.pickupDate)}</td>
       <td>${fmtDate(o.deliveredAt || o.estimatedDeliveryDate)}</td>
-      <td><span class="status-badge" style="background:${statusColor(o.packagedStatus)}">${escapeHTML(o.packagedStatus || 'Unknown')}</span></td>
+      <td class="status-cell">${statusCellHTML(o)}</td>
       <td>${fmtDate(o.cancelledAt)}</td>
       <td>${escapeHTML(o.paymentMode || '—')}</td>
       <td class="awb-cell">${awbCellHTML(o)}</td>
