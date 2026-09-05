@@ -37,17 +37,28 @@ async function start() {
   // Shopify order pull — frequent, since new orders/cancellations should
   // show up quickly. Never touches Delhivery/courier status.
   const shopifyIntervalMin = Number(process.env.SYNC_INTERVAL_MINUTES || 30);
-  cron.schedule(`*/${shopifyIntervalMin} * * * *`, () => {
-    runShopifySync().catch((err) => console.error('[sync:shopify] scheduled sync failed:', err.message));
-  });
+  cron.schedule(
+    `*/${shopifyIntervalMin} * * * *`,
+    () => {
+      runShopifySync().catch((err) => console.error('[sync:shopify] scheduled sync failed:', err.message));
+    },
+    { timezone: 'Asia/Kolkata' }
+  );
 
   // Delhivery/courier status check — deliberately much less frequent,
   // since it's an API call per pending order and the status doesn't
-  // change minute to minute. Runs at minute 0 every N hours.
+  // change minute to minute. Runs at minute 0 every N hours, IST.
+  // Render's servers run in UTC by default, so without an explicit
+  // timezone this would silently fire 5.5 hours off from what the
+  // schedule looks like.
   const deliveryIntervalHours = Number(process.env.DELIVERY_STATUS_INTERVAL_HOURS || 12);
-  cron.schedule(`0 */${deliveryIntervalHours} * * *`, () => {
-    runDelhiveryTracking().catch((err) => console.error('[sync:delhivery] scheduled check failed:', err.message));
-  });
+  cron.schedule(
+    `0 */${deliveryIntervalHours} * * *`,
+    () => {
+      runDelhiveryTracking().catch((err) => console.error('[sync:delhivery] scheduled check failed:', err.message));
+    },
+    { timezone: 'Asia/Kolkata' }
+  );
 }
 
 start().catch((err) => {
