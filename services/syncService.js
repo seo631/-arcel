@@ -27,7 +27,7 @@ async function syncShopifyOrders(sinceISO, untilISO) {
     const needsExisting =
       order.cancelledAt ||
       (order.courier && !isDelhiveryCourier(order.courier)) ||
-      (!order.courier && order.shopifyFulfillmentStatus === 'fulfilled');
+      (!order.courier && (order.shopifyFulfillmentStatus === 'fulfilled' || order.shopifyShipmentStatus === 'delivered'));
     let existingStatus;
     if (needsExisting) {
       const existing = await Order.findOne({ shopifyId: order.shopifyId }).select('packagedStatus').lean();
@@ -55,13 +55,14 @@ async function syncShopifyOrders(sinceISO, untilISO) {
       set.packagedStatus =
         mapped || (existingStatus && existingStatus !== 'Not Yet Shipped' ? existingStatus : 'Dispatched');
       if (set.packagedStatus === 'Delivered') set.deliveredAt = new Date();
-    } else if (!order.courier && order.shopifyFulfillmentStatus === 'fulfilled') {
-      // Fulfilled in Shopify but with NO courier/tracking attached at
-      // all — no AWB to check anywhere, which usually means it was
-      // handed to the customer directly (local/hand delivery) rather
-      // than shipped. Reflect that instead of leaving it stuck at
-      // "Not Yet Shipped" forever. Only applied while it hasn't already
-      // picked up a real status some other way.
+    } else if (!order.courier && (order.shopifyFulfillmentStatus === 'fulfilled' || order.shopifyShipmentStatus === 'delivered')) {
+      // No courier/tracking attached AT ALL — nothing to look up anywhere
+      // (Delhivery or otherwise) — but Shopify itself shows it as
+      // fulfilled/delivered. This is the "handed to the customer
+      // directly, no AWB, order page just says Delivered" case. Reflect
+      // that instead of leaving it stuck at "Not Yet Shipped" forever.
+      // Only applied while it hasn't already picked up a real status
+      // some other way.
       if (!existingStatus || existingStatus === 'Not Yet Shipped') {
         set.packagedStatus = 'Hand Delivered';
         set.deliveredAt = new Date();
