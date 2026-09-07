@@ -262,17 +262,30 @@ router.post('/orders/export', async (req, res) => {
       .sort({ orderDate: -1 })
       .lean();
 
+    // Explicit DD/MM/YYYY formatting, zero-padded — toLocaleDateString
+    // doesn't reliably pad single-digit days/months (e.g. gives
+    // "1/9/2026" instead of "01/09/2026" depending on the Node build's
+    // ICU data), so build it manually instead.
+    const fmtDate = (value) => {
+      if (!value) return '';
+      const d = new Date(value);
+      if (Number.isNaN(d.getTime())) return '';
+      const dd = String(d.getDate()).padStart(2, '0');
+      const mm = String(d.getMonth() + 1).padStart(2, '0');
+      return `${dd}/${mm}/${d.getFullYear()}`;
+    };
+
     const rows = orders.flatMap((o) => {
       // Shared fields — identical across every row for this order.
       const base = {
-        orderDate: o.orderDate ? new Date(o.orderDate).toLocaleDateString('en-IN') : '',
+        orderDate: fmtDate(o.orderDate),
         orderId: o.orderNumber || '',
         customer: o.customerName || '',
         mobile: o.mobileNo || '',
-        pickupDate: o.pickupDate ? new Date(o.pickupDate).toLocaleDateString('en-IN') : '',
-        estDelivery: o.estimatedDeliveryDate ? new Date(o.estimatedDeliveryDate).toLocaleDateString('en-IN') : '',
+        pickupDate: fmtDate(o.pickupDate),
+        estDelivery: fmtDate(o.estimatedDeliveryDate),
         status: o.packagedStatus || '',
-        cancelledOn: o.cancelledAt ? new Date(o.cancelledAt).toLocaleDateString('en-IN') : '',
+        cancelledOn: fmtDate(o.cancelledAt),
         paymentMode: o.paymentMode || '',
         orderValue: o.orderValue ?? '',
         tracking: o.trackingNumber ? `${o.courier ? `${o.courier}: ` : ''}${o.trackingNumber}` : '',

@@ -541,8 +541,12 @@ document.getElementById('syncRangeBtn').onclick = async () => {
       body: JSON.stringify({ since, until: until || undefined }),
     });
     await waitForSyncToFinish();
+    const summary = await fetchJSON('/api/summary');
+    const s = summary.lastSync?.shopify;
     note.className = 'sync-tool-note ok';
-    note.textContent = 'Done.';
+    note.textContent = s
+      ? `Fetched ${s.totalOrders} order(s) in range (${since} to ${until || 'today'}). New: ${s.created}, updated: ${s.updated}.`
+      : 'Done.';
     loadSummary();
     loadOrders();
   } catch (err) {

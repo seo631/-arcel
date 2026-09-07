@@ -47,14 +47,20 @@ async function syncShopifyOrders(sinceISO, untilISO) {
         autoCancelled += 1;
       }
     } else if (order.courier && !isDelhiveryCourier(order.courier)) {
-      // Shipped via some OTHER courier partner (not Delhivery) — our
-      // Delhivery API polling will never find this order, so Shopify's
-      // own fulfillment tracking (shipment_status) is the only source of
-      // truth for it, same info shown on the order's page in Shopify.
-      const mapped = SHIPMENT_STATUS_MAP[order.shopifyShipmentStatus];
-      set.packagedStatus =
-        mapped || (existingStatus && existingStatus !== 'Not Yet Shipped' ? existingStatus : 'Dispatched');
-      if (set.packagedStatus === 'Delivered') set.deliveredAt = new Date();
+      // Shipped via some OTHER courier partner per Shopify's label —
+      // Shopify's own fulfillment tracking (shipment_status) is a
+      // reasonable status source for these. But don't let it clobber an
+      // already-resolved terminal status (e.g. a real "RTO Delivered"
+      // confirmed directly against Delhivery by AWB — see
+      // syncDelhiveryTracking, which checks these regardless of the
+      // courier label since aggregators often route through Delhivery
+      // under the hood) with a stale or absent Shopify guess.
+      if (!existingStatus || !TERMINAL_STATUSES.includes(existingStatus)) {
+        const mapped = SHIPMENT_STATUS_MAP[order.shopifyShipmentStatus];
+        set.packagedStatus =
+          mapped || (existingStatus && existingStatus !== 'Not Yet Shipped' ? existingStatus : 'Dispatched');
+        if (set.packagedStatus === 'Delivered') set.deliveredAt = new Date();
+      }
     } else if (!order.courier && (order.shopifyFulfillmentStatus === 'fulfilled' || order.shopifyShipmentStatus === 'delivered')) {
       // No courier/tracking attached AT ALL — nothing to look up anywhere
       // (Delhivery or otherwise) — but Shopify itself shows it as
@@ -100,11 +106,22 @@ async function syncDelhiveryTracking(orderNumbers) {
     ? { orderNumber: { $in: orderNumbers } }
     : {
         packagedStatus: { $nin: TERMINAL_STATUSES },
-        // Skip orders shipped via some OTHER courier partner — Delhivery's
-        // API will never find them, so querying it is a wasted call every
-        // single time. Their status comes from Shopify's own fulfillment
-        // tracking instead (see syncShopifyOrders' courier handling).
-        $or: [{ courier: { $exists: false } }, { courier: null }, { courier: /delhivery/i }],
+        // Only truly skip an order if there's NOTHING to check it by —
+        // no ref_id will ever match (that's tried unconditionally below
+        // anyway) AND no real AWB from Shopify either. A courier label
+        // of "Shiprocket" etc. does NOT mean skip: aggregators like
+        // Shiprocket route through an actual last-mile carrier (often
+        // Delhivery) under the hood, so the AWB itself is frequently a
+        // genuine, directly-queryable Delhivery shipment even though
+        // Shopify's tracking_company field says something else. Trusting
+        // that label instead of checking the real AWB is exactly how a
+        // stale/wrong status (e.g. "Lost") never gets corrected.
+        $or: [
+          { courier: { $exists: false } },
+          { courier: null },
+          { courier: /delhivery/i },
+          { trackingNumber: { $exists: true, $nin: [null, ''] } },
+        ],
       };
   const pending = await Order.find(query).select('_id orderNumber pickupDate packagedStatus trackingNumber shopifyShipmentStatus');
 
