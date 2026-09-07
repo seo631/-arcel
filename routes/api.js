@@ -95,6 +95,34 @@ router.get('/orders', async (req, res) => {
   }
 });
 
+// DELETE /api/orders?before=2026-08-01[&confirm=yes]
+// One-time cleanup: permanently deletes every order dated before the
+// given date. Without &confirm=yes it's a dry run — just returns how
+// many orders WOULD be deleted, so you can check the number before
+// committing. Add &confirm=yes to actually delete them. Nothing in the
+// sync flow calls this automatically — deleting data is always a
+// deliberate, explicit action here.
+router.delete('/orders', async (req, res) => {
+  try {
+    const { before, confirm } = req.query;
+    if (!before || !/^\d{4}-\d{2}-\d{2}$/.test(before)) {
+      return res.status(400).json({ error: 'before must be a YYYY-MM-DD date, e.g. ?before=2026-08-01' });
+    }
+    const cutoff = new Date(normalizeSince(before));
+    const filter = { orderDate: { $lt: cutoff } };
+
+    if (confirm !== 'yes') {
+      const wouldDelete = await Order.countDocuments(filter);
+      return res.json({ wouldDelete, message: `Add &confirm=yes to permanently delete these ${wouldDelete} order(s).` });
+    }
+
+    const result = await Order.deleteMany(filter);
+    res.json({ deleted: result.deletedCount });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /api/orders/:orderNumber (full detail incl. scan history)
 router.get('/orders/:orderNumber', async (req, res) => {
   try {

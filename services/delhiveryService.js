@@ -27,6 +27,39 @@ function formatScanDate(value) {
   return `${Number(parts[2])} ${months[monthIndex]}`;
 }
 
+// Delhivery's coarse `Status.Status` string (e.g. "In Transit") is
+// ambiguous — it's used for BOTH a shipment moving toward the customer
+// AND one moving back to origin as an RTO/return. The only reliable
+// signal for "this is actually in the return leg" is `Status.StatusType`
+// — Delhivery sends 'RT' for anything moving in the return direction,
+// regardless of what the plain-English Status string says. Without
+// checking StatusType, an "out for return"/RTO-in-progress shipment
+// looks identical to a normal forward "In Transit" one.
+function mapDelhiveryStatus(status) {
+  const raw = (status.Status || '').trim();
+  const type = (status.StatusType || '').trim().toUpperCase();
+  const instructions = (status.Instructions || '').toLowerCase();
+
+  if (type === 'RT') {
+    if (raw === 'Delivered' || instructions.includes('rto delivered') || instructions.includes('delivered to origin')) {
+      return 'RTO Delivered';
+    }
+    if (instructions.includes('initiat')) return 'RTO Initiated';
+    return 'RTO In Transit'; // covers "out for return", "in transit" (return leg), etc.
+  }
+
+  if (type === 'DL') return 'Delivered';
+  if (type === 'CN') return 'Cancelled';
+  if (type === 'LT') return 'Lost';
+  if (type === 'PP') return 'Manifested'; // pickup pending
+
+  const known = [
+    'Pending', 'Manifested', 'Dispatched', 'In Transit', 'Delivered',
+    'RTO Initiated', 'RTO In Transit', 'RTO Delivered', 'Cancelled', 'Lost',
+  ];
+  return known.includes(raw) ? raw : (raw || 'Unknown');
+}
+
 /**
  * Runs one Delhivery packages/json lookup with the given query params
  * (either `{ ref_ids }` or `{ waybill }`) and normalizes the response.
@@ -90,7 +123,7 @@ async function queryDelhivery(extraParams) {
     // PromisedDeliveryDate first (Delhivery's committed SLA date), then
     // ExpectedDeliveryDate as the fallback live ETA — matches your script.
     estimatedDeliveryDate: toDDMMYYYY(shipment.PromisedDeliveryDate || shipment.ExpectedDeliveryDate),
-    packagedStatus: status.Status || 'Unknown',
+    packagedStatus: mapDelhiveryStatus(status),
     ndrReason: status.Status && status.Status !== 'Delivered' ? status.Instructions : null,
     scanHistory,
   };
