@@ -63,7 +63,15 @@ function mapDelhiveryStatus(status) {
       /\breturned\b/.test(raw.toLowerCase()) ||
       instructions.includes('rto delivered') ||
       instructions.includes('delivered to origin') ||
-      instructions.includes('returned')
+      instructions.includes('returned') ||
+      // Delhivery also phrases a completed return as "Shipment return
+      // accepted" (confirmed live on order 17049/AWB 45819210024080,
+      // Sep 2026) — this is the warehouse accepting the returned parcel
+      // back, i.e. the return IS complete, not still in progress. Without
+      // this, orders phrased this way got stuck on the vaguer
+      // "RTO In Transit" forever, since neither this check nor the
+      // scan-history fallback below recognized the phrase.
+      instructions.includes('return accepted')
     ) {
       return 'RTO';
     }
@@ -97,6 +105,7 @@ function mapDelhiveryStatus(status) {
 const SCAN_RTO_KEYWORDS = [
   { re: /rto\s*delivered/i, status: 'RTO' },
   { re: /\breturned\b/i, status: 'RTO' },
+  { re: /return\s*accepted/i, status: 'RTO' }, // "Shipment return accepted" — warehouse received the return; complete, not in-progress
   { re: /rto\s*initiat/i, status: 'RTO Initiated' },
   { re: /\brto\b/i, status: 'RTO In Transit' },
 ];
@@ -162,7 +171,18 @@ async function queryDelhivery(extraParams) {
         const detail = s.ScanDetail || s;
         const rawDate = detail.ScanDateTime || detail.StatusDateTime;
         const date = formatScanDate(rawDate);
-        const label = detail.Scan || detail.Instructions || detail.ScanType || '';
+        // Delhivery's `Scan` field is often a terse code (e.g. bare "RTO")
+        // while `Instructions` carries the actual human-readable detail
+        // (e.g. "Shipment return accepted") that the keyword matching
+        // above depends on. Combine both when they differ so no detail is
+        // lost — this fixed a real case where "RTO" alone only matched
+        // the vague generic keyword while the informative "return
+        // accepted" text sat unused in Instructions the whole time.
+        const scan = detail.Scan || '';
+        const instr = detail.Instructions || '';
+        const label = scan && instr && scan.trim().toLowerCase() !== instr.trim().toLowerCase()
+          ? `${scan} - ${instr}`
+          : (scan || instr || detail.ScanType || '');
         return date && label ? { date, label, rawDate } : null;
       })
       .filter(Boolean);

@@ -23,6 +23,7 @@ const axios = require('axios');
 const STATUS_KEYWORDS = [
   { re: /rto\s*delivered/i, status: 'RTO' },
   { re: /\breturned\b/i, status: 'RTO' },
+  { re: /return\s*accepted/i, status: 'RTO' }, // Delhivery's "Shipment return accepted" phrasing — same fix as delhiveryService.js
   { re: /rto\s*initiat/i, status: 'RTO Initiated' },
   { re: /\brto\b/i, status: 'RTO In Transit' },
   { re: /undelivered/i, status: 'Failed Delivery' },
