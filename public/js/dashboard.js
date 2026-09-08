@@ -7,7 +7,7 @@ const STATUS_COLORS = {
   'Manifested': 'var(--status-pending)',
   'RTO Initiated': 'var(--status-rto)',
   'RTO In Transit': 'var(--status-rto)',
-  'RTO Delivered': 'var(--status-rto)',
+  'RTO': 'var(--status-rto)',
   'Cancelled': 'var(--status-rto)',
   'Lost': 'var(--status-rto)',
   'Failed Delivery': 'var(--status-rto)',
@@ -17,7 +17,7 @@ const STATUS_COLORS = {
 
 const PACKAGED_STATUSES = [
   'Not Yet Shipped', 'Pending', 'Manifested', 'Dispatched', 'In Transit',
-  'Delivered', 'Hand Delivered', 'RTO Initiated', 'RTO In Transit', 'RTO Delivered',
+  'Delivered', 'Hand Delivered', 'RTO Initiated', 'RTO In Transit', 'RTO',
   'Cancelled', 'Lost', 'Failed Delivery', 'Unknown',
 ];
 
@@ -112,13 +112,13 @@ async function loadOrders() {
   if (state.to) params.set('to', state.to);
 
   const body = document.getElementById('ordersBody');
-  body.innerHTML = '<tr><td colspan="14" class="empty-state">Loading…</td></tr>';
+  body.innerHTML = '<tr><td colspan="15" class="empty-state">Loading…</td></tr>';
 
   const data = await fetchJSON(`/api/orders?${params}`);
   state.total = data.total || 0;
 
   if (!data.orders.length) {
-    body.innerHTML = '<tr><td colspan="14" class="empty-state">No orders match these filters.</td></tr>';
+    body.innerHTML = '<tr><td colspan="15" class="empty-state">No orders match these filters.</td></tr>';
   } else {
     body.innerHTML = data.orders.map(rowHTML).join('');
   }
@@ -177,6 +177,7 @@ function rowHTML(o) {
       <td>${fmtDate(o.deliveredAt || o.estimatedDeliveryDate)}</td>
       <td><span class="status-badge" style="background:${statusColor(o.packagedStatus)}">${escapeHTML(o.packagedStatus || 'Unknown')}</span></td>
       <td>${fmtDate(o.cancelledAt)}</td>
+      <td>${fmtDate(o.returnedAt)}</td>
       <td>${escapeHTML(o.paymentMode || '—')}</td>
       <td class="awb-cell">${awbCell}</td>
     </tr>

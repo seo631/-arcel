@@ -10,9 +10,15 @@ const ORDER_ID_PREFIX = process.env.DELHIVERY_ORDER_ID_PREFIX || 'NEAT-';
 // fresh RTO leg on the same AWB. syncService's auto-check queue treats
 // 'Delivered' as re-checkable for a window after deliveredAt
 // (DELIVERED_RECHECK_DAYS) instead of excluding it forever the moment
-// it's set — only 'RTO Delivered', 'Cancelled', and 'Hand Delivered' are
-// truly final (no further leg is ever expected on those AWBs).
-const TERMINAL_STATUSES = ['Delivered', 'RTO Delivered', 'Cancelled', 'Hand Delivered'];
+// it's set — only 'RTO', 'Cancelled', and 'Hand Delivered' are truly
+// final (no further leg is ever expected on those AWBs).
+//
+// 'RTO' is the single label for "the return is complete" — Delhivery's
+// own public tracking page uses the plain word "Returned" for this,
+// not "RTO Delivered", so a completed return shows here as one flat
+// status rather than a half-generic "RTO In Transit" that undersells
+// how resolved it actually is.
+const TERMINAL_STATUSES = ['Delivered', 'RTO', 'Cancelled', 'Hand Delivered'];
 
 function baseURL() {
   return process.env.DELHIVERY_BASE_URL || 'https://track.delhivery.com';
@@ -52,8 +58,14 @@ function mapDelhiveryStatus(status) {
   const instructions = (status.Instructions || '').toLowerCase();
 
   if (type === 'RT') {
-    if (raw === 'Delivered' || instructions.includes('rto delivered') || instructions.includes('delivered to origin')) {
-      return 'RTO Delivered';
+    if (
+      raw === 'Delivered' ||
+      /\breturned\b/.test(raw.toLowerCase()) ||
+      instructions.includes('rto delivered') ||
+      instructions.includes('delivered to origin') ||
+      instructions.includes('returned')
+    ) {
+      return 'RTO';
     }
     if (instructions.includes('initiat')) return 'RTO Initiated';
     return 'RTO In Transit'; // covers "out for return", "in transit" (return leg), etc.
@@ -66,7 +78,7 @@ function mapDelhiveryStatus(status) {
 
   const known = [
     'Pending', 'Manifested', 'Dispatched', 'In Transit', 'Delivered',
-    'RTO Initiated', 'RTO In Transit', 'RTO Delivered', 'Cancelled', 'Lost',
+    'RTO Initiated', 'RTO In Transit', 'RTO', 'Cancelled', 'Lost',
   ];
   return known.includes(raw) ? raw : (raw || 'Unknown');
 }
@@ -79,21 +91,29 @@ function mapDelhiveryStatus(status) {
 // trackingPageService's page-scrape keywords. This only ever pulls a
 // status TOWARD RTO (never away from it), so it can't override a
 // correctly-detected non-RTO status — it only catches this one lag
-// pattern.
+// pattern. "returned" is checked before the bare "rto" fallback so a
+// completed return (Delhivery's own wording: "Returned") lands on the
+// single flat 'RTO' status instead of the vaguer 'RTO In Transit'.
 const SCAN_RTO_KEYWORDS = [
-  { re: /rto\s*delivered/i, status: 'RTO Delivered' },
+  { re: /rto\s*delivered/i, status: 'RTO' },
+  { re: /\breturned\b/i, status: 'RTO' },
   { re: /rto\s*initiat/i, status: 'RTO Initiated' },
   { re: /\brto\b/i, status: 'RTO In Transit' },
 ];
 
+// Returns { status, scanDate } — scanDate (a real Date, from the raw scan
+// timestamp, not the display-formatted "D Mon" string) is set only when
+// this function is what identified the RTO, so callers can stamp
+// returnedAt with the actual event date instead of "whenever we happened
+// to sync".
 function inferStatusFromLatestScan(scanHistory, apiStatus) {
-  if (!scanHistory || !scanHistory.length) return apiStatus;
+  if (!scanHistory || !scanHistory.length) return { status: apiStatus, scanDate: null };
   const latest = scanHistory[scanHistory.length - 1]; // oldest-first array, so last = most recent
-  if (!latest || !latest.label) return apiStatus;
+  if (!latest || !latest.label) return { status: apiStatus, scanDate: null };
   for (const { re, status } of SCAN_RTO_KEYWORDS) {
-    if (re.test(latest.label)) return status;
+    if (re.test(latest.label)) return { status, scanDate: toDDMMYYYY(latest.rawDate) };
   }
-  return apiStatus;
+  return { status: apiStatus, scanDate: null };
 }
 
 /**
@@ -140,9 +160,10 @@ async function queryDelhivery(extraParams) {
     const raw = scans
       .map((s) => {
         const detail = s.ScanDetail || s;
-        const date = formatScanDate(detail.ScanDateTime || detail.StatusDateTime);
+        const rawDate = detail.ScanDateTime || detail.StatusDateTime;
+        const date = formatScanDate(rawDate);
         const label = detail.Scan || detail.Instructions || detail.ScanType || '';
-        return date && label ? { date, label } : null;
+        return date && label ? { date, label, rawDate } : null;
       })
       .filter(Boolean);
 
@@ -150,12 +171,15 @@ async function queryDelhivery(extraParams) {
     raw.forEach((e) => {
       const prev = scanHistory[scanHistory.length - 1];
       if (!prev || prev.label !== e.label) scanHistory.push(e);
-      else prev.date = e.date;
+      else {
+        prev.date = e.date;
+        prev.rawDate = e.rawDate;
+      }
     });
   }
 
   const apiStatus = mapDelhiveryStatus(status);
-  const packagedStatus = inferStatusFromLatestScan(scanHistory, apiStatus);
+  const { status: packagedStatus, scanDate } = inferStatusFromLatestScan(scanHistory, apiStatus);
 
   return {
     pickupDate: toDDMMYYYY(shipment.PickUpDate),
@@ -163,8 +187,12 @@ async function queryDelhivery(extraParams) {
     // ExpectedDeliveryDate as the fallback live ETA — matches your script.
     estimatedDeliveryDate: toDDMMYYYY(shipment.PromisedDeliveryDate || shipment.ExpectedDeliveryDate),
     packagedStatus,
+    // The actual return-scan date when the scan history told us so;
+    // callers fall back to "now" otherwise. Only meaningful when
+    // packagedStatus is 'RTO'.
+    returnedScanDate: packagedStatus === 'RTO' ? scanDate : null,
     ndrReason: status.Status && status.Status !== 'Delivered' ? status.Instructions : null,
-    scanHistory,
+    scanHistory: scanHistory.map(({ date, label }) => ({ date, label })), // drop rawDate — not part of the schema
   };
 }
 

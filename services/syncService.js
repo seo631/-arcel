@@ -11,15 +11,24 @@ const DELAY_MS = 300; // pacing between Delhivery calls, same as your Apps Scrip
 // checking it (treat it as genuinely final) rather than polling forever.
 const DELIVERED_RECHECK_DAYS = Number(process.env.DELIVERED_RECHECK_DAYS || 15);
 
-// Stamps deliveredAt for the recheck-window logic above. Write-once for
-// 'Delivered' specifically — re-stamping it to "now" on every recheck
-// that still finds 'Delivered' would keep pushing the window forward
-// forever and defeat the point of having one. 'RTO Delivered' is a
-// one-time terminal transition (excluded from the queue permanently
-// afterward regardless of this field), so it's safe to always stamp.
+// Stamps deliveredAt for the recheck-window logic above. Write-once —
+// re-stamping it to "now" on every recheck that still finds 'Delivered'
+// would keep pushing the window forward forever and defeat the point of
+// having one. Prefers Delhivery's own estimated/promised delivery date
+// (fallback) over "now" when available, same as before this rewrite.
 function deliveredAtStamp(newStatus, order, fallback) {
-  if (newStatus === 'RTO Delivered') return fallback || new Date();
   if (newStatus === 'Delivered' && !order.deliveredAt) return fallback || new Date();
+  return undefined;
+}
+
+// Stamps returnedAt when a shipment reaches the terminal 'RTO' status
+// (Delhivery's own wording: "Returned"). Prefers the actual return-scan
+// date from Delhivery's scan history over "now", so the dashboard's
+// "Returned On" column reflects when the return really happened rather
+// than whenever we happened to sync. Write-once, though 'RTO' is
+// permanently terminal anyway so this would never re-fire regardless.
+function returnedAtStamp(newStatus, order, scanDate) {
+  if (newStatus === 'RTO' && !order.returnedAt) return scanDate || new Date();
   return undefined;
 }
 
@@ -69,7 +78,7 @@ async function syncShopifyOrders(sinceISO, untilISO) {
       // Shipped via some OTHER courier partner per Shopify's label —
       // Shopify's own fulfillment tracking (shipment_status) is a
       // reasonable status source for these. But don't let it clobber an
-      // already-resolved terminal status (e.g. a real "RTO Delivered"
+      // already-resolved terminal status (e.g. a real "RTO"
       // confirmed directly against Delhivery by AWB — see
       // syncDelhiveryTracking, which checks these regardless of the
       // courier label since aggregators often route through Delhivery
@@ -133,7 +142,7 @@ async function syncDelhiveryTracking(orderNumbers) {
             // DELIVERED_RECHECK_DAYS of its deliveredAt — long enough to
             // catch a post-delivery customer return (a fresh RTO leg on
             // the same AWB), short enough not to poll every ever-delivered
-            // order indefinitely. 'RTO Delivered'/'Cancelled'/'Hand
+            // order indefinitely. 'RTO'/'Cancelled'/'Hand
             // Delivered' stay excluded permanently — no further leg is
             // ever expected on those.
             $or: [
@@ -165,7 +174,7 @@ async function syncDelhiveryTracking(orderNumbers) {
           },
         ],
       };
-  const pending = await Order.find(query).select('_id orderNumber pickupDate packagedStatus deliveredAt trackingNumber trackingUrl shopifyShipmentStatus');
+  const pending = await Order.find(query).select('_id orderNumber pickupDate packagedStatus deliveredAt returnedAt trackingNumber trackingUrl shopifyShipmentStatus');
 
   let checked = 0;
   let updatedCount = 0;
@@ -192,6 +201,8 @@ async function syncDelhiveryTracking(orderNumbers) {
         const set = { packagedStatus: pageResult.packagedStatus, lastSyncedAt: new Date(), syncError: null };
         const stampedAt = deliveredAtStamp(pageResult.packagedStatus, order);
         if (stampedAt) set.deliveredAt = stampedAt;
+        const returnedStampedAt = returnedAtStamp(pageResult.packagedStatus, order);
+        if (returnedStampedAt) set.returnedAt = returnedStampedAt;
         await Order.updateOne({ _id: order._id }, { $set: set });
         fromTrackingPage += 1;
         updatedCount += 1;
@@ -234,6 +245,8 @@ async function syncDelhiveryTracking(orderNumbers) {
           const set = { packagedStatus: mapped, lastSyncedAt: new Date(), syncError: null };
           const stampedAt = deliveredAtStamp(mapped, order);
           if (stampedAt) set.deliveredAt = stampedAt;
+          const returnedStampedAt = returnedAtStamp(mapped, order);
+          if (returnedStampedAt) set.returnedAt = returnedStampedAt;
           await Order.updateOne({ _id: order._id }, { $set: set });
           fromShopifyFallback += 1;
         } else {
@@ -254,6 +267,8 @@ async function syncDelhiveryTracking(orderNumbers) {
       if (result.estimatedDeliveryDate) set.estimatedDeliveryDate = result.estimatedDeliveryDate;
       const stampedAt = deliveredAtStamp(result.packagedStatus, order, result.estimatedDeliveryDate);
       if (stampedAt) set.deliveredAt = stampedAt;
+      const returnedStampedAt = returnedAtStamp(result.packagedStatus, order, result.returnedScanDate);
+      if (returnedStampedAt) set.returnedAt = returnedStampedAt;
 
       // Pickup date: write-once, never overwritten once set — same as your script.
       if (!order.pickupDate && result.pickupDate) set.pickupDate = result.pickupDate;

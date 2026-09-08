@@ -60,11 +60,12 @@ const OrderSchema = new mongoose.Schema(
     pickupDate: Date, // write-once: never overwritten once set
     estimatedDeliveryDate: Date, // Delhivery's PromisedDeliveryDate || ExpectedDeliveryDate
     deliveredAt: Date, // set once packagedStatus === 'Delivered'
+    returnedAt: Date, // set once packagedStatus === 'RTO' — the actual return-scan date when known, not just when we happened to sync
     packagedStatus: {
       type: String,
       enum: [
         'Not Yet Shipped', 'Pending', 'Manifested', 'Dispatched', 'In Transit',
-        'Delivered', 'RTO Initiated', 'RTO In Transit', 'RTO Delivered',
+        'Delivered', 'RTO Initiated', 'RTO In Transit', 'RTO',
         'Cancelled', 'Lost', 'Unknown', 'Failed Delivery', 'Hand Delivered',
       ],
       default: 'Not Yet Shipped',

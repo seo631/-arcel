@@ -16,7 +16,7 @@ const { importFromWorkbook } = require('../services/excelImportService');
 
 const PACKAGED_STATUSES = [
   'Not Yet Shipped', 'Pending', 'Manifested', 'Dispatched', 'In Transit',
-  'Delivered', 'Hand Delivered', 'RTO Initiated', 'RTO In Transit', 'RTO Delivered',
+  'Delivered', 'Hand Delivered', 'RTO Initiated', 'RTO In Transit', 'RTO',
   'Cancelled', 'Lost', 'Failed Delivery', 'Unknown',
 ];
 
@@ -194,7 +194,7 @@ router.post('/sync/shopify', async (req, res) => {
 
 // POST /api/sync/delhivery
 // "Update Delivery Status" button — checks LIVE tracking status at
-// Delhivery for every order not already Delivered/RTO Delivered/Cancelled,
+// Delhivery for every order not already Delivered/RTO/Cancelled,
 // and updates packagedStatus/scanHistory/etc. Does not touch Shopify or
 // pull in any new orders. Can take a while with a large queue — poll
 // /api/summary's syncProgress for a live checked/total count.
@@ -259,6 +259,7 @@ router.patch('/orders/status', async (req, res) => {
 
     const update = { packagedStatus: status };
     if (status === 'Delivered') update.deliveredAt = new Date();
+    if (status === 'RTO') update.returnedAt = new Date();
 
     const result = await Order.updateMany(
       { orderNumber: { $in: orderNumbers } },
@@ -314,6 +315,7 @@ router.post('/orders/export', async (req, res) => {
         estDelivery: fmtDate(o.estimatedDeliveryDate),
         status: o.packagedStatus || '',
         cancelledOn: fmtDate(o.cancelledAt),
+        returnedOn: fmtDate(o.returnedAt),
         paymentMode: o.paymentMode || '',
         orderValue: o.orderValue ?? '',
         tracking: o.trackingNumber ? `${o.courier ? `${o.courier}: ` : ''}${o.trackingNumber}` : '',
@@ -337,6 +339,7 @@ router.post('/orders/export', async (req, res) => {
         'Est. Delivery': base.estDelivery,
         'Status': base.status,
         'Cancelled On': base.cancelledOn,
+        'Returned On': base.returnedOn,
         'Payment Mode': base.paymentMode,
         'Order Value': base.orderValue,
         'AWB / Tracking': base.tracking,

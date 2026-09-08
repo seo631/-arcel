@@ -16,9 +16,13 @@ const axios = require('axios');
  */
 
 // Checked in order — more specific phrases before generic ones, so
-// e.g. "RTO Delivered" matches before the plainer "Delivered" would.
+// e.g. "returned"/"RTO Delivered" match before the plainer "Delivered"
+// or bare "rto" would. A completed return maps to the single flat 'RTO'
+// status (matching Delhivery's own public wording, "Returned"), not a
+// vaguer "RTO In Transit".
 const STATUS_KEYWORDS = [
-  { re: /rto\s*delivered/i, status: 'RTO Delivered' },
+  { re: /rto\s*delivered/i, status: 'RTO' },
+  { re: /\breturned\b/i, status: 'RTO' },
   { re: /rto\s*initiat/i, status: 'RTO Initiated' },
   { re: /\brto\b/i, status: 'RTO In Transit' },
   { re: /undelivered/i, status: 'Failed Delivery' },

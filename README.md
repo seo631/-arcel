@@ -5,15 +5,15 @@ core logic — same Delhivery lookup method, same status vocabulary, same
 rate-limit handling — but running as a standalone Render app.
 
 Table shows: Order Date, Order ID, Customer Name, Mobile No, Item(s),
-Qty, Pickup Date, Delivered/Est. Delivery Date, Status, Payment Mode —
-plus a Scan History drawer per order.
+Qty, Pickup Date, Delivered/Est. Delivery Date, Status, Cancelled On,
+Returned On, Payment Mode — plus a Scan History drawer per order.
 
 ## How it matches your Apps Script
 
 - **Delhivery lookup**: `ref_ids=NEAT-{orderNumber}`, `token` as a query
   param, one order per call, same 429/403 retry-once behavior, same
   300ms pacing between calls.
-- **Terminal statuses**: `RTO Delivered`, `Cancelled`, and `Hand Delivered`
+- **Terminal statuses**: `RTO`, `Cancelled`, and `Hand Delivered`
   are skipped on future syncs permanently — no further leg is ever
   expected on those AWBs. `Delivered` is different: customers return
   items after delivery, which shows up as a fresh RTO leg on the same
@@ -21,6 +21,13 @@ plus a Scan History drawer per order.
   `DELIVERED_RECHECK_DAYS` (default 15) after its delivery date before
   it's treated as final. You can always force a re-check on any order,
   regardless of status or age, via "check selected".
+- **RTO status**: a completed return shows as the single flat status
+  `RTO` (matching Delhivery's own public tracking wording, "Returned")
+  rather than the vaguer `RTO In Transit` — detected either from
+  Delhivery's coarse status fields or, if those lag, from the word
+  "returned"/"rto delivered" in the same response's scan history. The
+  **Returned On** column shows the actual return-scan date when it's
+  known, not just whenever the dashboard happened to sync.
 - **Pickup Date** is write-once — never overwritten once set.
 - **Estimated delivery** uses `PromisedDeliveryDate || ExpectedDeliveryDate`.
   Once Delivered, the dashboard shows the delivered date instead.
@@ -33,6 +40,23 @@ Difference from Apps Script: Node isn't bound by its 6-minute execution
 cap, so one sync run works through the whole pending queue at the same
 safe pace instead of needing manual "next 50" clicks. Runs on a
 schedule (`SYNC_INTERVAL_MINUTES`) or on demand from the dashboard.
+
+## Upgrading from an older deploy
+
+If you're updating an existing deployment, some orders in your database
+may still have the old `RTO Delivered` status (renamed to `RTO`). Run
+this once after deploying the new code, with `MONGODB_URI` set the same
+way the app itself uses it:
+
+```
+npm run migrate:rto
+```
+
+This is idempotent — safe to run more than once, and a no-op if there's
+nothing left to migrate. See `scripts/migrate-rto-delivered.js` for
+exactly what it does (moves the old `deliveredAt` value on those rows
+over to the new `returnedAt` field, since under the old code that field
+was recording "when we noticed the return", not a real delivery date).
 
 ## The date filter
 
