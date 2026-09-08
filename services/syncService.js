@@ -1,6 +1,7 @@
 const Order = require('../models/Order');
 const { fetchOrdersSince, resolveDefaultSince, isDelhiveryCourier, SHIPMENT_STATUS_MAP } = require('./shopifyService');
 const { fetchByOrderNumber, TERMINAL_STATUSES } = require('./delhiveryService');
+const { fetchTrackingPageStatus } = require('./trackingPageService');
 
 const DELAY_MS = 300; // pacing between Delhivery calls, same as your Apps Script
 
@@ -123,11 +124,12 @@ async function syncDelhiveryTracking(orderNumbers) {
           { trackingNumber: { $exists: true, $nin: [null, ''] } },
         ],
       };
-  const pending = await Order.find(query).select('_id orderNumber pickupDate packagedStatus trackingNumber shopifyShipmentStatus');
+  const pending = await Order.find(query).select('_id orderNumber pickupDate packagedStatus trackingNumber trackingUrl shopifyShipmentStatus');
 
   let checked = 0;
   let updatedCount = 0;
   let notFound = 0;
+  let fromTrackingPage = 0;
   let fromShopifyFallback = 0;
   let errors = 0;
   syncProgress = { checked: 0, total: pending.length };
@@ -136,11 +138,36 @@ async function syncDelhiveryTracking(orderNumbers) {
     for (const order of pending) {
       checked += 1;
       syncProgress.checked = checked;
-      // Try Delhivery's ref_id lookup first (our own "NEAT-<orderNumber>"
-      // convention). If that misses, also try the real AWB from Shopify's
-      // fulfillment tracking — this catches orders booked through an
-      // aggregator (e.g. Shiprocket) that still ship on Delhivery's
-      // network under Delhivery's own AWB, which our ref_id never matches.
+
+      // Tier 1: scrape the live shiprocket.co tracking page directly, if
+      // we have one — this works across EVERY courier (Delhivery,
+      // Xpressbees, etc.) since it's the same aggregator page regardless
+      // of the actual last-mile carrier, and reflects the truly live
+      // status rather than a cached/possibly-stale field from Shopify or
+      // an account-scoped Delhivery API lookup that may not see AWBs
+      // booked under a different (Shiprocket-owned) Delhivery account.
+      const pageResult = await fetchTrackingPageStatus(order.trackingUrl);
+      if (pageResult && pageResult.packagedStatus && pageResult.packagedStatus !== order.packagedStatus) {
+        const set = { packagedStatus: pageResult.packagedStatus, lastSyncedAt: new Date(), syncError: null };
+        if (['Delivered', 'RTO Delivered'].includes(pageResult.packagedStatus)) set.deliveredAt = new Date();
+        await Order.updateOne({ _id: order._id }, { $set: set });
+        fromTrackingPage += 1;
+        updatedCount += 1;
+        await sleep(DELAY_MS);
+        continue;
+      }
+      if (pageResult && pageResult.packagedStatus === order.packagedStatus) {
+        // Already correct — nothing to change, don't fall through to
+        // the slower tiers below for no reason.
+        await Order.updateOne({ _id: order._id }, { $set: { lastSyncedAt: new Date(), syncError: null } });
+        await sleep(DELAY_MS);
+        continue;
+      }
+
+      // Tier 2: Delhivery's own API — ref_id (our "NEAT-<orderNumber>"
+      // convention) then the real AWB from Shopify's fulfillment
+      // tracking, which catches orders booked through an aggregator that
+      // still ship on Delhivery's network under Delhivery's own AWB.
       let result = await fetchByOrderNumber(order.orderNumber, order.trackingNumber);
 
       if (result.rateLimited) {
@@ -156,10 +183,10 @@ async function syncDelhiveryTracking(orderNumbers) {
         continue;
       }
       if (result.notFound) {
-        // Last resort: Shopify's own carrier-reported shipment_status
-        // (the same info shown on the order's page in Shopify) — covers
-        // shipments Delhivery's public tracking API won't recognize under
-        // either lookup, e.g. ones booked entirely through a third party.
+        // Tier 3, last resort: Shopify's own carrier-reported
+        // shipment_status (the same info shown on the order's page in
+        // Shopify) — covers shipments neither the tracking page scrape
+        // nor Delhivery's API could resolve.
         const mapped = SHIPMENT_STATUS_MAP[order.shopifyShipmentStatus];
         if (mapped && mapped !== order.packagedStatus) {
           const set = { packagedStatus: mapped, lastSyncedAt: new Date(), syncError: null };
@@ -195,7 +222,7 @@ async function syncDelhiveryTracking(orderNumbers) {
     syncProgress = null;
   }
 
-  return { checked, updated: updatedCount, fromShopifyFallback, notFound, errors, remaining: 0 };
+  return { checked, updated: updatedCount, fromTrackingPage, fromShopifyFallback, notFound, errors, remaining: 0 };
 }
 
 async function runSync({ since, until } = {}) {

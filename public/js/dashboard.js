@@ -304,7 +304,7 @@ document.getElementById('checkSelectedDelhiveryBtn').onclick = async () => {
     const d = summary.lastSync?.delhivery;
     note.className = 'sync-tool-note ok';
     note.textContent = d
-      ? `Checked ${d.checked}, updated ${d.updated}${d.fromShopifyFallback ? ` (${d.fromShopifyFallback} from Shopify)` : ''}, not found ${d.notFound}, errors ${d.errors}.`
+      ? `Checked ${d.checked}, updated ${d.updated}${d.fromTrackingPage ? ` (${d.fromTrackingPage} from tracking page` : ''}${d.fromShopifyFallback ? `${d.fromTrackingPage ? ', ' : ' ('}${d.fromShopifyFallback} from Shopify` : ''}${d.fromTrackingPage || d.fromShopifyFallback ? ')' : ''}, not found ${d.notFound}, errors ${d.errors}.`
       : 'Done.';
     loadSummary();
     loadOrders();
