@@ -1,6 +1,17 @@
 const axios = require('axios');
 
 const ORDER_ID_PREFIX = process.env.DELHIVERY_ORDER_ID_PREFIX || 'NEAT-';
+
+// "Terminal" here means "resolved enough that a lower-priority source
+// (Shopify's own shipment_status guess) shouldn't be allowed to clobber
+// it" — see syncShopifyOrders. It does NOT mean "never worth checking
+// again". In particular 'Delivered' is NOT permanently final: customers
+// return items after delivery all the time, and that shows up as a
+// fresh RTO leg on the same AWB. syncService's auto-check queue treats
+// 'Delivered' as re-checkable for a window after deliveredAt
+// (DELIVERED_RECHECK_DAYS) instead of excluding it forever the moment
+// it's set — only 'RTO Delivered', 'Cancelled', and 'Hand Delivered' are
+// truly final (no further leg is ever expected on those AWBs).
 const TERMINAL_STATUSES = ['Delivered', 'RTO Delivered', 'Cancelled', 'Hand Delivered'];
 
 function baseURL() {

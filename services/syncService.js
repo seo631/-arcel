@@ -5,6 +5,24 @@ const { fetchTrackingPageStatus } = require('./trackingPageService');
 
 const DELAY_MS = 300; // pacing between Delhivery calls, same as your Apps Script
 
+// How long after delivery a 'Delivered' order stays in the auto-check
+// queue, to catch a customer return that shows up as a fresh RTO leg on
+// the same AWB. After this many days without a status change, we stop
+// checking it (treat it as genuinely final) rather than polling forever.
+const DELIVERED_RECHECK_DAYS = Number(process.env.DELIVERED_RECHECK_DAYS || 15);
+
+// Stamps deliveredAt for the recheck-window logic above. Write-once for
+// 'Delivered' specifically — re-stamping it to "now" on every recheck
+// that still finds 'Delivered' would keep pushing the window forward
+// forever and defeat the point of having one. 'RTO Delivered' is a
+// one-time terminal transition (excluded from the queue permanently
+// afterward regardless of this field), so it's safe to always stamp.
+function deliveredAtStamp(newStatus, order, fallback) {
+  if (newStatus === 'RTO Delivered') return fallback || new Date();
+  if (newStatus === 'Delivered' && !order.deliveredAt) return fallback || new Date();
+  return undefined;
+}
+
 let syncInProgress = false;
 let lastSyncSummary = null;
 let syncProgress = null; // { checked, total } while a Delhivery check is running
@@ -103,28 +121,51 @@ async function syncShopifyOrders(sinceISO, untilISO) {
  * the UI can show "checked X of Y" instead of an indefinite spinner.
  */
 async function syncDelhiveryTracking(orderNumbers) {
+  const recheckCutoff = new Date(Date.now() - DELIVERED_RECHECK_DAYS * 24 * 60 * 60 * 1000);
   const query = orderNumbers && orderNumbers.length
     ? { orderNumber: { $in: orderNumbers } }
     : {
-        packagedStatus: { $nin: TERMINAL_STATUSES },
-        // Only truly skip an order if there's NOTHING to check it by —
-        // no ref_id will ever match (that's tried unconditionally below
-        // anyway) AND no real AWB from Shopify either. A courier label
-        // of "Shiprocket" etc. does NOT mean skip: aggregators like
-        // Shiprocket route through an actual last-mile carrier (often
-        // Delhivery) under the hood, so the AWB itself is frequently a
-        // genuine, directly-queryable Delhivery shipment even though
-        // Shopify's tracking_company field says something else. Trusting
-        // that label instead of checking the real AWB is exactly how a
-        // stale/wrong status (e.g. "Lost") never gets corrected.
-        $or: [
-          { courier: { $exists: false } },
-          { courier: null },
-          { courier: /delhivery/i },
-          { trackingNumber: { $exists: true, $nin: [null, ''] } },
+        $and: [
+          {
+            // Anything not in TERMINAL_STATUSES is checked as usual. A
+            // 'Delivered' order is ALSO kept in the queue (instead of
+            // being excluded forever) as long as it's within
+            // DELIVERED_RECHECK_DAYS of its deliveredAt — long enough to
+            // catch a post-delivery customer return (a fresh RTO leg on
+            // the same AWB), short enough not to poll every ever-delivered
+            // order indefinitely. 'RTO Delivered'/'Cancelled'/'Hand
+            // Delivered' stay excluded permanently — no further leg is
+            // ever expected on those.
+            $or: [
+              { packagedStatus: { $nin: TERMINAL_STATUSES } },
+              {
+                packagedStatus: 'Delivered',
+                // Matches both "never stamped yet" and "stamped recently".
+                $or: [{ deliveredAt: null }, { deliveredAt: { $gte: recheckCutoff } }],
+              },
+            ],
+          },
+          {
+            // Only truly skip an order if there's NOTHING to check it by —
+            // no ref_id will ever match (that's tried unconditionally below
+            // anyway) AND no real AWB from Shopify either. A courier label
+            // of "Shiprocket" etc. does NOT mean skip: aggregators like
+            // Shiprocket route through an actual last-mile carrier (often
+            // Delhivery) under the hood, so the AWB itself is frequently a
+            // genuine, directly-queryable Delhivery shipment even though
+            // Shopify's tracking_company field says something else. Trusting
+            // that label instead of checking the real AWB is exactly how a
+            // stale/wrong status (e.g. "Lost") never gets corrected.
+            $or: [
+              { courier: { $exists: false } },
+              { courier: null },
+              { courier: /delhivery/i },
+              { trackingNumber: { $exists: true, $nin: [null, ''] } },
+            ],
+          },
         ],
       };
-  const pending = await Order.find(query).select('_id orderNumber pickupDate packagedStatus trackingNumber trackingUrl shopifyShipmentStatus');
+  const pending = await Order.find(query).select('_id orderNumber pickupDate packagedStatus deliveredAt trackingNumber trackingUrl shopifyShipmentStatus');
 
   let checked = 0;
   let updatedCount = 0;
@@ -149,7 +190,8 @@ async function syncDelhiveryTracking(orderNumbers) {
       const pageResult = await fetchTrackingPageStatus(order.trackingUrl);
       if (pageResult && pageResult.packagedStatus && pageResult.packagedStatus !== order.packagedStatus) {
         const set = { packagedStatus: pageResult.packagedStatus, lastSyncedAt: new Date(), syncError: null };
-        if (['Delivered', 'RTO Delivered'].includes(pageResult.packagedStatus)) set.deliveredAt = new Date();
+        const stampedAt = deliveredAtStamp(pageResult.packagedStatus, order);
+        if (stampedAt) set.deliveredAt = stampedAt;
         await Order.updateOne({ _id: order._id }, { $set: set });
         fromTrackingPage += 1;
         updatedCount += 1;
@@ -190,7 +232,8 @@ async function syncDelhiveryTracking(orderNumbers) {
         const mapped = SHIPMENT_STATUS_MAP[order.shopifyShipmentStatus];
         if (mapped && mapped !== order.packagedStatus) {
           const set = { packagedStatus: mapped, lastSyncedAt: new Date(), syncError: null };
-          if (mapped === 'Delivered') set.deliveredAt = new Date();
+          const stampedAt = deliveredAtStamp(mapped, order);
+          if (stampedAt) set.deliveredAt = stampedAt;
           await Order.updateOne({ _id: order._id }, { $set: set });
           fromShopifyFallback += 1;
         } else {
@@ -209,7 +252,8 @@ async function syncDelhiveryTracking(orderNumbers) {
         syncError: null,
       };
       if (result.estimatedDeliveryDate) set.estimatedDeliveryDate = result.estimatedDeliveryDate;
-      if (result.packagedStatus === 'Delivered') set.deliveredAt = result.estimatedDeliveryDate || new Date();
+      const stampedAt = deliveredAtStamp(result.packagedStatus, order, result.estimatedDeliveryDate);
+      if (stampedAt) set.deliveredAt = stampedAt;
 
       // Pickup date: write-once, never overwritten once set — same as your script.
       if (!order.pickupDate && result.pickupDate) set.pickupDate = result.pickupDate;

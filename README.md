@@ -13,8 +13,14 @@ plus a Scan History drawer per order.
 - **Delhivery lookup**: `ref_ids=NEAT-{orderNumber}`, `token` as a query
   param, one order per call, same 429/403 retry-once behavior, same
   300ms pacing between calls.
-- **Terminal statuses** (`Delivered`, `RTO Delivered`, `Cancelled`) are
-  skipped on future syncs.
+- **Terminal statuses**: `RTO Delivered`, `Cancelled`, and `Hand Delivered`
+  are skipped on future syncs permanently — no further leg is ever
+  expected on those AWBs. `Delivered` is different: customers return
+  items after delivery, which shows up as a fresh RTO leg on the same
+  AWB, so a `Delivered` order stays in the auto-check queue for
+  `DELIVERED_RECHECK_DAYS` (default 15) after its delivery date before
+  it's treated as final. You can always force a re-check on any order,
+  regardless of status or age, via "check selected".
 - **Pickup Date** is write-once — never overwritten once set.
 - **Estimated delivery** uses `PromisedDeliveryDate || ExpectedDeliveryDate`.
   Once Delivered, the dashboard shows the delivered date instead.
