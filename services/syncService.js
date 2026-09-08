@@ -144,7 +144,20 @@ async function syncDelhiveryTracking(orderNumbers) {
             // the same AWB), short enough not to poll every ever-delivered
             // order indefinitely. 'RTO'/'Cancelled'/'Hand
             // Delivered' stay excluded permanently — no further leg is
-            // ever expected on those.
+            // ever expected on those UNLESS the order was also cancelled
+            // in Shopify (see below).
+            //
+            // A Shopify cancellation is a standing signal that the stored
+            // packagedStatus might be wrong: real case — order 16333 sat
+            // at 'Delivered' (terminal, and past the recheck window) for
+            // weeks while its own Delhivery scan history showed it never
+            // reached the customer at all and had actually gone RTO. The
+            // normal terminal/age filter above would skip it forever.
+            // cancelledAt overrides that entirely and keeps the order in
+            // the queue permanently, regardless of packagedStatus or age
+            // — deliberately unbounded (no time window) per your call,
+            // since a cancelled order's true delivery outcome is worth
+            // confirming for as long as the record exists.
             $or: [
               { packagedStatus: { $nin: TERMINAL_STATUSES } },
               {
@@ -152,6 +165,7 @@ async function syncDelhiveryTracking(orderNumbers) {
                 // Matches both "never stamped yet" and "stamped recently".
                 $or: [{ deliveredAt: null }, { deliveredAt: { $gte: recheckCutoff } }],
               },
+              { cancelledAt: { $exists: true, $ne: null } },
             ],
           },
           {
