@@ -71,6 +71,31 @@ function mapDelhiveryStatus(status) {
   return known.includes(raw) ? raw : (raw || 'Unknown');
 }
 
+// If the coarse Status/StatusType fields haven't caught up yet, the most
+// recent entry in the SAME response's scan history can already show an
+// RTO scan — this is exactly what happened on a real order: the API's
+// top-level status still said "Delivered" days after its own scan log
+// had already recorded an RTO event. Checked most-specific first, mirrors
+// trackingPageService's page-scrape keywords. This only ever pulls a
+// status TOWARD RTO (never away from it), so it can't override a
+// correctly-detected non-RTO status — it only catches this one lag
+// pattern.
+const SCAN_RTO_KEYWORDS = [
+  { re: /rto\s*delivered/i, status: 'RTO Delivered' },
+  { re: /rto\s*initiat/i, status: 'RTO Initiated' },
+  { re: /\brto\b/i, status: 'RTO In Transit' },
+];
+
+function inferStatusFromLatestScan(scanHistory, apiStatus) {
+  if (!scanHistory || !scanHistory.length) return apiStatus;
+  const latest = scanHistory[scanHistory.length - 1]; // oldest-first array, so last = most recent
+  if (!latest || !latest.label) return apiStatus;
+  for (const { re, status } of SCAN_RTO_KEYWORDS) {
+    if (re.test(latest.label)) return status;
+  }
+  return apiStatus;
+}
+
 /**
  * Runs one Delhivery packages/json lookup with the given query params
  * (either `{ ref_ids }` or `{ waybill }`) and normalizes the response.
@@ -129,12 +154,15 @@ async function queryDelhivery(extraParams) {
     });
   }
 
+  const apiStatus = mapDelhiveryStatus(status);
+  const packagedStatus = inferStatusFromLatestScan(scanHistory, apiStatus);
+
   return {
     pickupDate: toDDMMYYYY(shipment.PickUpDate),
     // PromisedDeliveryDate first (Delhivery's committed SLA date), then
     // ExpectedDeliveryDate as the fallback live ETA — matches your script.
     estimatedDeliveryDate: toDDMMYYYY(shipment.PromisedDeliveryDate || shipment.ExpectedDeliveryDate),
-    packagedStatus: mapDelhiveryStatus(status),
+    packagedStatus,
     ndrReason: status.Status && status.Status !== 'Delivered' ? status.Instructions : null,
     scanHistory,
   };
