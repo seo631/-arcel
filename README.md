@@ -5,7 +5,7 @@ core logic — same Delhivery lookup method, same status vocabulary, same
 rate-limit handling — but running as a standalone Render app.
 
 Table shows: Order Date, Order ID, Customer Name, Mobile No, Item(s),
-Qty, Pickup Date, Delivered/Est. Delivery Date, Status, Cancelled On,
+Qty, Pickup Date, Est. Delivery Date, Actual Delivery Date, Status, Cancelled On,
 Returned On, Payment Mode — plus a Scan History drawer per order.
 
 ## How it matches your Apps Script
@@ -29,8 +29,18 @@ Returned On, Payment Mode — plus a Scan History drawer per order.
   **Returned On** column shows the actual return-scan date when it's
   known, not just whenever the dashboard happened to sync.
 - **Pickup Date** is write-once — never overwritten once set.
-- **Estimated delivery** uses `PromisedDeliveryDate || ExpectedDeliveryDate`.
-  Once Delivered, the dashboard shows the delivered date instead.
+- **Estimated delivery** uses `PromisedDeliveryDate || ExpectedDeliveryDate`
+  and always stays the estimate.
+- **Actual Delivery** is a separate column, filled only when an order's
+  status is Delivered *and* a real date was read: from the shiprocket.co
+  tracking link for other courier partners, or from Delhivery's API
+  (`DeliveryDate`, DL status time, or the "Delivered" scan). It's
+  write-once and never set to "today" as a guess — blank means the date
+  couldn't be read. Delivered orders still missing it stay in the
+  auto-check queue for `DELIVERY_DATE_BACKFILL_DAYS` (default 60). For
+  older history run `npm run backfill:delivery-date` once (try
+  `-- --limit 20` first). To check a tracking link:
+  `npm run check:tracking -- "<url>"`.
 - **Payment Mode**: exact `cod`/`prepaid` tag wins first, then falls
   back to the gateway name.
 - **Scan History**: consecutive duplicate scan labels collapsed, shown

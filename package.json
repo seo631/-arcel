@@ -6,7 +6,9 @@
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
-    "migrate:rto": "node scripts/migrate-rto-delivered.js"
+    "migrate:rto": "node scripts/migrate-rto-delivered.js",
+    "backfill:delivery-date": "node scripts/backfill-actual-delivery.js",
+    "check:tracking": "node scripts/check-tracking-page.js"
   },
   "dependencies": {
     "axios": "^1.7.7",

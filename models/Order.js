@@ -59,7 +59,13 @@ const OrderSchema = new mongoose.Schema(
     refId: String, // "NEAT-16768" — what was actually queried
     pickupDate: Date, // write-once: never overwritten once set
     estimatedDeliveryDate: Date, // Delhivery's PromisedDeliveryDate || ExpectedDeliveryDate
-    deliveredAt: Date, // set once packagedStatus === 'Delivered'
+    deliveredAt: Date, // set once packagedStatus === 'Delivered' — drives the recheck window only, NOT shown as the delivery date
+    // The real date the courier marked the parcel delivered — read from
+    // Delhivery's API (DeliveryDate / DL status / delivered scan) or, for
+    // other partners, from the delivered entry on their tracking-link
+    // page. Only ever set from a real source (never "now"), so blank
+    // means "delivered but the date couldn't be read", not a guess.
+    actualDeliveryDate: Date,
     returnedAt: Date, // set once packagedStatus === 'RTO' — the actual return-scan date when known, not just when we happened to sync
     packagedStatus: {
       type: String,

@@ -125,6 +125,30 @@ function inferStatusFromLatestScan(scanHistory, apiStatus) {
   return { status: apiStatus, scanDate: null };
 }
 
+// Real delivery date for a shipment that Delhivery reports as Delivered.
+// Sources, most direct first: the shipment's own DeliveryDate field, the
+// status timestamp when the status type is DL, then the newest scan that
+// says "Delivered" (excluding undelivered / RTO / return wording).
+// Returns null if none of them yield a date — callers must NOT invent one.
+function extractDeliveredDate(shipment, status, scanHistory) {
+  const direct = toDDMMYYYY(shipment.DeliveryDate);
+  if (direct && !Number.isNaN(direct.getTime())) return direct;
+
+  if ((status.StatusType || '').trim().toUpperCase() === 'DL') {
+    const fromStatus = toDDMMYYYY(status.StatusDateTime);
+    if (fromStatus && !Number.isNaN(fromStatus.getTime())) return fromStatus;
+  }
+
+  for (let i = scanHistory.length - 1; i >= 0; i -= 1) {
+    const { label, rawDate } = scanHistory[i];
+    if (/\bdelivered\b/i.test(label) && !/undelivered|not\s+delivered|rto|return/i.test(label)) {
+      const d = toDDMMYYYY(rawDate);
+      if (d && !Number.isNaN(d.getTime())) return d;
+    }
+  }
+  return null;
+}
+
 /**
  * Runs one Delhivery packages/json lookup with the given query params
  * (either `{ ref_ids }` or `{ waybill }`) and normalizes the response.
@@ -207,6 +231,9 @@ async function queryDelhivery(extraParams) {
     // ExpectedDeliveryDate as the fallback live ETA — matches your script.
     estimatedDeliveryDate: toDDMMYYYY(shipment.PromisedDeliveryDate || shipment.ExpectedDeliveryDate),
     packagedStatus,
+    // Only meaningful (and only looked up) when the final status is
+    // Delivered — an RTO/in-transit shipment has no delivery date.
+    actualDeliveryDate: packagedStatus === 'Delivered' ? extractDeliveredDate(shipment, status, scanHistory) : null,
     // The actual return-scan date when the scan history told us so;
     // callers fall back to "now" otherwise. Only meaningful when
     // packagedStatus is 'RTO'.

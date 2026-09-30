@@ -32,6 +32,12 @@ function returnedAtStamp(newStatus, order, scanDate) {
   return undefined;
 }
 
+// Delivered orders that still have no actualDeliveryDate stay in the
+// auto-check queue this many days (counted from deliveredAt) so the date
+// gets filled in, without polling old undated orders forever. For older
+// history run `npm run backfill:delivery-date` once.
+const DELIVERY_DATE_BACKFILL_DAYS = Number(process.env.DELIVERY_DATE_BACKFILL_DAYS || 60);
+
 let syncInProgress = false;
 let lastSyncSummary = null;
 let syncProgress = null; // { checked, total } while a Delhivery check is running
@@ -131,6 +137,7 @@ async function syncShopifyOrders(sinceISO, untilISO) {
  */
 async function syncDelhiveryTracking(orderNumbers) {
   const recheckCutoff = new Date(Date.now() - DELIVERED_RECHECK_DAYS * 24 * 60 * 60 * 1000);
+  const backfillCutoff = new Date(Date.now() - DELIVERY_DATE_BACKFILL_DAYS * 24 * 60 * 60 * 1000);
   const query = orderNumbers && orderNumbers.length
     ? { orderNumber: { $in: orderNumbers } }
     : {
@@ -166,6 +173,12 @@ async function syncDelhiveryTracking(orderNumbers) {
                 $or: [{ deliveredAt: null }, { deliveredAt: { $gte: recheckCutoff } }],
               },
               { cancelledAt: { $exists: true, $ne: null } },
+              {
+                // Delivered but the real delivery date was never read.
+                packagedStatus: 'Delivered',
+                actualDeliveryDate: null,
+                deliveredAt: { $gte: backfillCutoff },
+              },
             ],
           },
           {
@@ -188,7 +201,7 @@ async function syncDelhiveryTracking(orderNumbers) {
           },
         ],
       };
-  const pending = await Order.find(query).select('_id orderNumber pickupDate packagedStatus deliveredAt returnedAt trackingNumber trackingUrl shopifyShipmentStatus');
+  const pending = await Order.find(query).select('_id orderNumber pickupDate packagedStatus deliveredAt actualDeliveryDate returnedAt trackingNumber trackingUrl shopifyShipmentStatus');
 
   let checked = 0;
   let updatedCount = 0;
@@ -217,16 +230,29 @@ async function syncDelhiveryTracking(orderNumbers) {
         if (stampedAt) set.deliveredAt = stampedAt;
         const returnedStampedAt = returnedAtStamp(pageResult.packagedStatus, order);
         if (returnedStampedAt) set.returnedAt = returnedStampedAt;
+        if (pageResult.packagedStatus === 'Delivered' && pageResult.deliveredDate && !order.actualDeliveryDate) {
+          set.actualDeliveryDate = pageResult.deliveredDate;
+        }
         await Order.updateOne({ _id: order._id }, { $set: set });
         fromTrackingPage += 1;
         updatedCount += 1;
         await sleep(DELAY_MS);
         continue;
       }
-      if (pageResult && pageResult.packagedStatus === order.packagedStatus) {
+      const needsDeliveryDate =
+        pageResult && pageResult.packagedStatus === 'Delivered' && !order.actualDeliveryDate && !pageResult.deliveredDate;
+      // Page says Delivered but no date could be read from it: don't stop
+      // here — fall through to Delhivery's API, which may have the date.
+      if (pageResult && pageResult.packagedStatus === order.packagedStatus && !needsDeliveryDate) {
         // Already correct — nothing to change, don't fall through to
         // the slower tiers below for no reason.
-        await Order.updateOne({ _id: order._id }, { $set: { lastSyncedAt: new Date(), syncError: null } });
+        // ...except a Delivered order that's still missing its actual
+        // delivery date: fill it in from the page while we have it.
+        const same = { lastSyncedAt: new Date(), syncError: null };
+        if (pageResult.packagedStatus === 'Delivered' && pageResult.deliveredDate && !order.actualDeliveryDate) {
+          same.actualDeliveryDate = pageResult.deliveredDate;
+        }
+        await Order.updateOne({ _id: order._id }, { $set: same });
         await sleep(DELAY_MS);
         continue;
       }
@@ -279,7 +305,10 @@ async function syncDelhiveryTracking(orderNumbers) {
         syncError: null,
       };
       if (result.estimatedDeliveryDate) set.estimatedDeliveryDate = result.estimatedDeliveryDate;
-      const stampedAt = deliveredAtStamp(result.packagedStatus, order, result.estimatedDeliveryDate);
+      if (result.packagedStatus === 'Delivered' && result.actualDeliveryDate && !order.actualDeliveryDate) {
+        set.actualDeliveryDate = result.actualDeliveryDate;
+      }
+      const stampedAt = deliveredAtStamp(result.packagedStatus, order, result.actualDeliveryDate || result.estimatedDeliveryDate);
       if (stampedAt) set.deliveredAt = stampedAt;
       const returnedStampedAt = returnedAtStamp(result.packagedStatus, order, result.returnedScanDate);
       if (returnedStampedAt) set.returnedAt = returnedStampedAt;

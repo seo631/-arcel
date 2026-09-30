@@ -11,6 +11,7 @@ const HEADER_ALIASES = {
   qty: ['qty', 'quantity'],
   pickupDate: ['pickup date'],
   estimatedDeliveryDate: ['estimate delivery date', 'estimate/actual delivery date', 'estimated delivery date', 'delivery date'],
+  actualDeliveryDate: ['actual delivery date', 'actual delivery', 'delivered on', 'delivered date'],
   packagedStatus: ['packaged status', 'status', 'package status'],
   scanHistory: ['scan history', 'status journey'],
   paymentMode: ['payment mode', 'payment'],
@@ -87,6 +88,7 @@ async function importFromWorkbook(buffer) {
         mobileNo: rec.mobileNo ? String(rec.mobileNo) : undefined,
         pickupDate: excelSerialToDate(rec.pickupDate),
         estimatedDeliveryDate: excelSerialToDate(rec.estimatedDeliveryDate),
+        actualDeliveryDate: excelSerialToDate(rec.actualDeliveryDate),
         packagedStatus: rec.packagedStatus || undefined,
         paymentMode: rec.paymentMode || undefined,
         lineItems: [],
@@ -120,6 +122,8 @@ async function importFromWorkbook(buffer) {
     // Pickup date stays write-once, matching the live sync's behaviour.
     if (rec.pickupDate && !(existing && existing.pickupDate)) set.pickupDate = rec.pickupDate;
     if (rec.estimatedDeliveryDate) set.estimatedDeliveryDate = rec.estimatedDeliveryDate;
+    // Same as the live sync: write-once, a real date is never overwritten.
+    if (rec.actualDeliveryDate && !(existing && existing.actualDeliveryDate)) set.actualDeliveryDate = rec.actualDeliveryDate;
     if (!existing) set.source = 'excel';
     set.lastSyncedAt = new Date();
 
