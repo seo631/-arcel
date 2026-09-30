@@ -126,24 +126,39 @@ function inferStatusFromLatestScan(scanHistory, apiStatus) {
 }
 
 // Real delivery date for a shipment that Delhivery reports as Delivered.
-// Sources, most direct first: the shipment's own DeliveryDate field, the
-// status timestamp when the status type is DL, then the newest scan that
-// says "Delivered" (excluding undelivered / RTO / return wording).
-// Returns null if none of them yield a date — callers must NOT invent one.
-function extractDeliveredDate(shipment, status, scanHistory) {
-  const direct = toDDMMYYYY(shipment.DeliveryDate);
-  if (direct && !Number.isNaN(direct.getTime())) return direct;
+// Sources, most direct first:
+//   1. the newest scan Delhivery itself types as a delivery (ScanType DL)
+//   2. the shipment's own DeliveryDate field
+//   3. the current status timestamp, when the status is Delivered / type DL
+//   4. the newest scan whose text says "Delivered" (not undelivered/RTO)
+// Returns null if none yield a date — callers must NOT invent one.
+function validDate(value) {
+  const d = toDDMMYYYY(value);
+  return d && !Number.isNaN(d.getTime()) ? d : null;
+}
 
-  if ((status.StatusType || '').trim().toUpperCase() === 'DL') {
-    const fromStatus = toDDMMYYYY(status.StatusDateTime);
-    if (fromStatus && !Number.isNaN(fromStatus.getTime())) return fromStatus;
+function extractDeliveredDate(shipment, status, scanHistory) {
+  for (let i = scanHistory.length - 1; i >= 0; i -= 1) {
+    if (scanHistory[i].scanType === 'DL' && !/undelivered|rto|return/i.test(scanHistory[i].label)) {
+      const d = validDate(scanHistory[i].rawDate);
+      if (d) return d;
+    }
+  }
+
+  const direct = validDate(shipment.DeliveryDate);
+  if (direct) return direct;
+
+  const isDelivered = (status.StatusType || '').trim().toUpperCase() === 'DL' || (status.Status || '').trim() === 'Delivered';
+  if (isDelivered) {
+    const fromStatus = validDate(status.StatusDateTime);
+    if (fromStatus) return fromStatus;
   }
 
   for (let i = scanHistory.length - 1; i >= 0; i -= 1) {
     const { label, rawDate } = scanHistory[i];
     if (/\bdelivered\b/i.test(label) && !/undelivered|not\s+delivered|rto|return/i.test(label)) {
-      const d = toDDMMYYYY(rawDate);
-      if (d && !Number.isNaN(d.getTime())) return d;
+      const d = validDate(rawDate);
+      if (d) return d;
     }
   }
   return null;
@@ -207,7 +222,7 @@ async function queryDelhivery(extraParams) {
         const label = scan && instr && scan.trim().toLowerCase() !== instr.trim().toLowerCase()
           ? `${scan} - ${instr}`
           : (scan || instr || detail.ScanType || '');
-        return date && label ? { date, label, rawDate } : null;
+        return date && label ? { date, label, rawDate, scanType: String(detail.ScanType || '').toUpperCase() } : null;
       })
       .filter(Boolean);
 
@@ -218,6 +233,7 @@ async function queryDelhivery(extraParams) {
       else {
         prev.date = e.date;
         prev.rawDate = e.rawDate;
+        prev.scanType = e.scanType;
       }
     });
   }
@@ -239,7 +255,7 @@ async function queryDelhivery(extraParams) {
     // packagedStatus is 'RTO'.
     returnedScanDate: packagedStatus === 'RTO' ? scanDate : null,
     ndrReason: status.Status && status.Status !== 'Delivered' ? status.Instructions : null,
-    scanHistory: scanHistory.map(({ date, label }) => ({ date, label })), // drop rawDate — not part of the schema
+    scanHistory: scanHistory.map(({ date, label }) => ({ date, label })), // drop rawDate/scanType — not part of the schema
   };
 }
 

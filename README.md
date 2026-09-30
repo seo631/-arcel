@@ -32,9 +32,10 @@ Returned On, Payment Mode — plus a Scan History drawer per order.
 - **Estimated delivery** uses `PromisedDeliveryDate || ExpectedDeliveryDate`
   and always stays the estimate.
 - **Actual Delivery** is a separate column, filled only when an order's
-  status is Delivered *and* a real date was read: from the shiprocket.co
-  tracking link for other courier partners, or from Delhivery's API
-  (`DeliveryDate`, DL status time, or the "Delivered" scan). It's
+  status is Delivered *and* a real date was read. Delhivery's API is
+  always tried first (the DL delivery scan, `DeliveryDate`, or the
+  Delivered status time); only if Delhivery has no record of the
+  order/AWB is the order's tracking link (other courier partner) read. It's
   write-once and never set to "today" as a guess — blank means the date
   couldn't be read. Delivered orders still missing it stay in the
   auto-check queue for `DELIVERY_DATE_BACKFILL_DAYS` (default 60). For
