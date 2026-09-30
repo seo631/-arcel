@@ -285,6 +285,15 @@ document.getElementById('bulkUpdateBtn').onclick = async () => {
 // ---- Check Delivery Status for just the checked rows — fast, and works
 // even on an already-Delivered/Cancelled order since you picked it
 // explicitly. Skips the rest of the "Not Yet Shipped" queue entirely. ----
+function describeCheckResult(d) {
+  if (!d) return 'Done.';
+  const parts = [`Checked ${d.checked}`, `status updated ${d.updated}`, `actual delivery date filled ${d.datesFilled || 0}`];
+  if (d.fromTrackingPage) parts.push(`${d.fromTrackingPage} status from tracking link`);
+  if (d.fromShopifyFallback) parts.push(`${d.fromShopifyFallback} from Shopify`);
+  parts.push(`not found ${d.notFound}`, `errors ${d.errors}`);
+  return parts.join(', ') + '.';
+}
+
 document.getElementById('checkSelectedDelhiveryBtn').onclick = async () => {
   const note = document.getElementById('bulkActionNote');
   const btn = document.getElementById('checkSelectedDelhiveryBtn');
@@ -296,18 +305,28 @@ document.getElementById('checkSelectedDelhiveryBtn').onclick = async () => {
   note.className = 'sync-tool-note';
   note.textContent = `Checking ${orderNumbers.length} order(s)…`;
   try {
-    await fetchJSON('/api/sync/delhivery/selected', {
+    const started = await fetchJSON('/api/sync/delhivery/selected', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ orderNumbers }),
     });
+    // The server answers 202 "already in progress" when another check is
+    // running — nothing was started for THIS click, so say so instead of
+    // silently showing the other run's results.
+    if (started.message && /already/i.test(started.message)) {
+      note.className = 'sync-tool-note error';
+      note.textContent = 'Another sync/check is already running — wait for it to finish (see the "Checking… x/y" label at the top), then click again.';
+      btn.disabled = false;
+      return;
+    }
     await waitForSyncToFinish();
     const summary = await fetchJSON('/api/summary');
     const d = summary.lastSync?.delhivery;
     note.className = 'sync-tool-note ok';
-    note.textContent = d
-      ? `Checked ${d.checked}, updated ${d.updated}${d.fromTrackingPage ? ` (${d.fromTrackingPage} from tracking page` : ''}${d.fromShopifyFallback ? `${d.fromTrackingPage ? ', ' : ' ('}${d.fromShopifyFallback} from Shopify` : ''}${d.fromTrackingPage || d.fromShopifyFallback ? ')' : ''}, not found ${d.notFound}, errors ${d.errors}.`
-      : 'Done.';
+    note.textContent = describeCheckResult(d);
+    if (d && d.dateIssues && d.dateIssues.length) {
+      note.textContent += ' Missing dates: ' + d.dateIssues.slice(0, 5).map((i) => `#${i.orderNumber} (${i.reason})`).join('; ') + (d.dateIssues.length > 5 ? ` …and ${d.dateIssues.length - 5} more` : '') + '.';
+    }
     loadSummary();
     loadOrders();
   } catch (err) {

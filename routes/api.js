@@ -13,6 +13,7 @@ const {
   getSyncProgress,
 } = require('../services/syncService');
 const { importFromWorkbook } = require('../services/excelImportService');
+const { fetchRawPage, parseTrackingHtml } = require('../services/trackingPageService');
 
 const PACKAGED_STATUSES = [
   'Not Yet Shipped', 'Pending', 'Manifested', 'Dispatched', 'In Transit',
@@ -118,6 +119,49 @@ router.delete('/orders', async (req, res) => {
 
     const result = await Order.deleteMany(filter);
     res.json({ deleted: result.deletedCount });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/debug/tracking/:orderNumber[?raw=1]
+// Fetches the order's saved tracking link exactly like the sync does and
+// shows what was read: HTTP status, the parsed status/delivered date, and
+// the snippets around "deliver" in the raw HTML. Add ?raw=1 to get the
+// full raw HTML back as plain text (to save/send when a link's date isn't
+// being picked up).
+router.get('/debug/tracking/:orderNumber', async (req, res) => {
+  try {
+    const order = await Order.findOne({ orderNumber: req.params.orderNumber })
+      .select('orderNumber packagedStatus trackingUrl trackingNumber courier actualDeliveryDate')
+      .lean();
+    if (!order) return res.status(404).json({ error: 'Order not found' });
+    if (!order.trackingUrl) return res.json({ order, problem: 'This order has no tracking link saved.' });
+
+    const page = await fetchRawPage(order.trackingUrl);
+    if (page.error) return res.json({ order, problem: `Could not fetch the link: ${page.error}` });
+    if (req.query.raw) {
+      res.type('text/plain').send(page.html);
+      return;
+    }
+    const isShiprocket = /shiprocket\.co\/tracking\//i.test(order.trackingUrl);
+    const parsed = page.httpStatus === 200 ? parseTrackingHtml(page.html, isShiprocket) : null;
+    const snippets = [];
+    const re = /deliver/gi;
+    let m;
+    while ((m = re.exec(page.html)) && snippets.length < 8) {
+      snippets.push(page.html.slice(Math.max(0, m.index - 150), m.index + 200).replace(/\s+/g, ' '));
+      re.lastIndex = m.index + 200;
+    }
+    res.json({
+      order,
+      httpStatus: page.httpStatus,
+      finalUrl: page.finalUrl,
+      htmlBytes: page.html.length,
+      parsed,
+      deliveredDate: parsed?.deliveredDate || null,
+      snippets,
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

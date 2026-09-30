@@ -39,8 +39,12 @@ Returned On, Payment Mode — plus a Scan History drawer per order.
   couldn't be read. Delivered orders still missing it stay in the
   auto-check queue for `DELIVERY_DATE_BACKFILL_DAYS` (default 60). For
   older history run `npm run backfill:delivery-date` once (try
-  `-- --limit 20` first). To check a tracking link:
-  `npm run check:tracking -- "<url>"`.
+  `-- --limit 20` first).
+- **Tracking links:** Shiprocket links are fully parsed; for any other
+  partner's link only an explicit "Delivered" (+ its date) is trusted.
+  If a date isn't picked up, open `/api/debug/tracking/<orderNumber>` in
+  the browser (shows what was read + snippets; add `?raw=1` for the raw
+  HTML) or run `npm run check:tracking -- "<url>" --save raw.html`.
 - **Payment Mode**: exact `cod`/`prepaid` tag wins first, then falls
   back to the gateway name.
 - **Scan History**: consecutive duplicate scan labels collapsed, shown

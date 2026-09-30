@@ -132,74 +132,171 @@ function htmlToText(html) {
 
 function extractDeliveredDate(html) {
   // 1) Explicit key in embedded JSON, e.g. "delivered_date":"2026-09-05 14:32:00"
-  const keyRe = /["'](?:delivered_date|delivery_date|delivered_at|deliveredDate|deliveredOn|delivered_on)["']\s*:\s*["']([^"']+)["']/gi;
+  //    or an epoch value like "delivered_at":1757059200.
+  const keyRe = /["'](?:delivered_date|delivery_date|delivered_at|deliveredDate|deliveredOn|delivered_on|deliveredAt|delivery_datetime|actual_delivery_date|actualDeliveryDate)["']\s*:\s*(?:["']([^"']+)["']|(\d{10,13}))/gi;
   let km;
   while ((km = keyRe.exec(html))) {
+    if (km[2]) {
+      const ms = km[2].length === 10 ? Number(km[2]) * 1000 : Number(km[2]);
+      const d = new Date(ms);
+      if (!Number.isNaN(d.getTime()) && d.getFullYear() >= 2020 && d <= new Date()) {
+        return makeDate(d.getFullYear(), d.getMonth(), d.getDate());
+      }
+      continue;
+    }
     const dates = findDates(km[1]);
     if (dates.length) return dates[0].date;
   }
 
-  // 2) Nearest date to a genuine "Delivered" entry in the activity log.
-  //    \bdelivered\b already excludes "Undelivered"; skip RTO/return
-  //    phrasing so a returned parcel's "delivered to origin" isn't
-  //    mistaken for the customer delivery.
+  // 2a) Structured pass over the raw HTML: take the tightest entry that
+  //     contains a genuine "Delivered" — the enclosing JSON object or
+  //     <li>/<tr> row, cut off at the first nested child — and read the
+  //     date inside it. This is what stops a "current_status":"Delivered"
+  //     header from being paired with the previous event's date.
+  //     \bdelivered\b already excludes "Undelivered"; RTO/return/origin
+  //     phrasing is skipped so a returned parcel's "delivered to origin"
+  //     isn't mistaken for the customer delivery.
+  const isReturnContext = (str, idx) =>
+    /rto|return|origin/i.test(str.slice(Math.max(0, idx - 12), idx)) || /origin/i.test(str.slice(idx, idx + 24));
+  const openers = ['{', '<li', '<tr', '['];
+  const closers = ['}', '</li>', '</tr>', '{', '<li', '<tr', ']'];
+  const wordRe = /\bdelivered\b/gi;
+  let wm;
+  while ((wm = wordRe.exec(html))) {
+    if (isReturnContext(html, wm.index)) continue;
+    const start = Math.max(...openers.map((o) => html.lastIndexOf(o, wm.index)));
+    const ends = closers.map((c) => html.indexOf(c, wm.index + 1)).filter((i) => i > -1);
+    const end = ends.length ? Math.min(...ends) : wm.index + 300;
+    const segment = html.slice(Math.max(start, wm.index - 300), Math.min(end + 1, wm.index + 300));
+    const dates = findDates(segment);
+    if (dates.length) {
+      const anchor = wm.index - Math.max(start, wm.index - 300);
+      dates.sort((x, y) => Math.abs(x.index - anchor) - Math.abs(y.index - anchor));
+      return dates[0].date;
+    }
+  }
+
+  // 2b) Fallback for markup with no rows/objects (plain divs): nearest
+  //     date to a "Delivered" in the visible text, activity log first.
   const text = htmlToText(html);
   const actIdx = text.search(/Activity\s*:?/i);
   const scopes = actIdx === -1 ? [text] : [text.slice(actIdx), text];
   for (const scope of scopes) {
-    const wordRe = /\bdelivered\b/gi;
-    let wm;
-    while ((wm = wordRe.exec(scope))) {
-      const before = scope.slice(Math.max(0, wm.index - 12), wm.index);
-      const after = scope.slice(wm.index, wm.index + 24);
-      if (/rto|return|origin/i.test(before) || /origin/i.test(after)) continue;
-
-      const from = Math.max(0, wm.index - 120);
-      const windowText = scope.slice(from, wm.index + 160);
-      const dates = findDates(windowText);
+    const re = /\bdelivered\b/gi;
+    let tm;
+    while ((tm = re.exec(scope))) {
+      if (isReturnContext(scope, tm.index)) continue;
+      const from = Math.max(0, tm.index - 120);
+      const dates = findDates(scope.slice(from, tm.index + 160));
       if (!dates.length) continue;
-      const anchor = wm.index - from;
-      dates.sort((a, b) => Math.abs(a.index - anchor) - Math.abs(b.index - anchor));
+      const anchor = tm.index - from;
+      dates.sort((x, y) => Math.abs(x.index - anchor) - Math.abs(y.index - anchor));
       return dates[0].date;
     }
   }
   return null;
 }
 
-/**
- * Fetches and parses a shiprocket.co tracking page.
- * Returns { packagedStatus, deliveredDate } on success (deliveredDate is
- * only set when the status is Delivered AND a date could be read), { notFound: true } if the page
- * loaded but no recognizable status was found, or { error } on a
- * network/HTTP failure. Returns null if `url` isn't a shiprocket.co URL
- * at all, so callers can skip this tier cleanly for other domains.
- */
-async function fetchTrackingPageStatus(url) {
-  if (!url || !/shiprocket\.co\/tracking\//i.test(url)) return null;
+// ---------- Generic (non-Shiprocket) tracking pages ----------
+// Other partners' pages have unknown markup, so the only thing trusted
+// from them is an explicit "Delivered" — never any other status — which
+// keeps a wrongly-parsed page from overwriting a good status. JSON status
+// fields first (most modern trackers embed their state as JSON), then the
+// visible "Status: ..." label, then plain "has been delivered" wording.
+function genericDeliveredCheck(html) {
+  const jsonRe = /["'](?:current_status|currentStatus|shipment_status|shipmentStatus|delivery_status|deliveryStatus|tracking_status|trackingStatus|status_text|statusText|latest_status|latestStatus)["']\s*:\s*["']([^"']{2,60})["']/gi;
+  let m;
+  let seen = null;
+  while ((m = jsonRe.exec(html))) {
+    const mapped = mapStatusBlock(m[1]);
+    if (mapped) {
+      seen = m[1];
+      if (mapped === 'Delivered') return { delivered: true, evidence: `json status "${m[1]}"` };
+      break;
+    }
+  }
+  if (seen) return { delivered: false, evidence: `json status "${seen}"` };
 
+  const text = htmlToText(html);
+  const label = text.match(/(?:current\s+|shipment\s+|order\s+|delivery\s+)?status\s*[:\-]?\s*([A-Za-z][A-Za-z ]{2,30})/i);
+  if (label) {
+    const mapped = mapStatusBlock(label[1]);
+    if (mapped) {
+      return mapped === 'Delivered'
+        ? { delivered: true, evidence: `status label "${label[1].trim()}"` }
+        : { delivered: false, evidence: `status label "${label[1].trim()}"` };
+    }
+  }
+  if (/(?:has\s+been|was|successfully|is)\s+delivered(?!\s+to\s+origin)/i.test(text) && !/rto|return(?:ed)?\s+to/i.test(text.slice(0, 2000))) {
+    return { delivered: true, evidence: 'text says "delivered"' };
+  }
+  return { delivered: false, evidence: null };
+}
+
+function parseTrackingHtml(html, isShiprocket) {
+  if (isShiprocket) {
+    const block = isolateCurrentStatusBlock(html);
+    const packagedStatus = mapStatusBlock(block);
+    if (!packagedStatus) return { notFound: true, reason: 'Shiprocket page loaded but no recognisable status found' };
+    return {
+      packagedStatus,
+      deliveredDate: packagedStatus === 'Delivered' ? extractDeliveredDate(html) : null,
+    };
+  }
+  const check = genericDeliveredCheck(html);
+  if (check.delivered) {
+    return { packagedStatus: 'Delivered', deliveredDate: extractDeliveredDate(html), evidence: check.evidence };
+  }
+  return {
+    notFound: true,
+    reason: check.evidence
+      ? `link shows ${check.evidence}, not delivered`
+      : `no status found in the raw HTML (${html.length} bytes) — the page is probably rendered by JavaScript`,
+  };
+}
+
+const BROWSER_HEADERS = {
+  'User-Agent':
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
+  Accept: 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8',
+  'Accept-Language': 'en-IN,en;q=0.9',
+};
+
+// Raw fetch, shared by the sync and the debug endpoint/script.
+async function fetchRawPage(url) {
   let res;
   try {
     res = await axios.get(url, {
       timeout: 20000,
+      maxRedirects: 5,
       validateStatus: () => true,
-      headers: {
-        'User-Agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
-      },
+      responseType: 'text',
+      transformResponse: [(d) => d],
+      headers: BROWSER_HEADERS,
     });
   } catch (err) {
     return { error: err.message };
   }
-  if (res.status !== 200) return { error: `HTTP ${res.status}` };
-
-  const html = String(res.data);
-  const block = isolateCurrentStatusBlock(html);
-  const packagedStatus = mapStatusBlock(block);
-  if (!packagedStatus) return { notFound: true };
-  return {
-    packagedStatus,
-    deliveredDate: packagedStatus === 'Delivered' ? extractDeliveredDate(html) : null,
-  };
+  const finalUrl = res.request?.res?.responseUrl || url;
+  return { httpStatus: res.status, html: String(res.data ?? ''), finalUrl };
 }
 
-module.exports = { fetchTrackingPageStatus, extractDeliveredDate };
+/**
+ * Fetches a tracking link's raw HTML and reads the status + delivered date.
+ *  - shiprocket.co links: full status parsing (as before).
+ *  - any other http(s) link: only an explicit "Delivered" is trusted.
+ * Returns { packagedStatus, deliveredDate? } when a status was read,
+ * { notFound: true, reason } when the page loaded but nothing usable was
+ * found, { error } on a network/HTTP failure, or null if there is no
+ * usable link at all.
+ */
+async function fetchTrackingPageStatus(url) {
+  if (!url || !/^https?:\/\//i.test(String(url).trim())) return null;
+  const link = String(url).trim();
+  const page = await fetchRawPage(link);
+  if (page.error) return { error: page.error };
+  if (page.httpStatus !== 200) return { error: `HTTP ${page.httpStatus}` };
+  return parseTrackingHtml(page.html, /shiprocket\.co\/tracking\//i.test(link));
+}
+
+module.exports = { fetchTrackingPageStatus, fetchRawPage, parseTrackingHtml, extractDeliveredDate };
