@@ -2,6 +2,8 @@ const Order = require('../models/Order');
 const { fetchOrdersSince, resolveDefaultSince, isDelhiveryCourier, SHIPMENT_STATUS_MAP } = require('./shopifyService');
 const { fetchByOrderNumber, TERMINAL_STATUSES } = require('./delhiveryService');
 const { fetchTrackingPageStatus } = require('./trackingPageService');
+const { deliveryDateFromScanHistory } = require('./scanDateService');
+const { findActualDeliveryDate, apiLookup } = require('./deliveryDateService');
 
 const DELAY_MS = 300; // pacing between Delhivery calls, same as your Apps Script
 
@@ -11,7 +13,9 @@ const DELAY_MS = 300; // pacing between Delhivery calls, same as your Apps Scrip
 // checking it (treat it as genuinely final) rather than polling forever.
 const DELIVERED_RECHECK_DAYS = Number(process.env.DELIVERED_RECHECK_DAYS || 15);
 
-// Stamps deliveredAt for the recheck-window logic above. Write-once —
+// Stamps deliveredAt for the recheck-window logic above. INTERNAL only —
+// it is "when we noticed", never shown as the delivery date (that is
+// actualDeliveryDate, which is only ever set from a real source). Write-once —
 // re-stamping it to "now" on every recheck that still finds 'Delivered'
 // would keep pushing the window forward forever and defeat the point of
 // having one. Prefers Delhivery's own estimated/promised delivery date
@@ -202,7 +206,7 @@ async function syncDelhiveryTracking(orderNumbers) {
           },
         ],
       };
-  const pending = await Order.find(query).select('_id orderNumber pickupDate packagedStatus deliveredAt actualDeliveryDate returnedAt trackingNumber trackingUrl shopifyShipmentStatus');
+  const pending = await Order.find(query).select('_id orderNumber pickupDate packagedStatus deliveredAt actualDeliveryDate returnedAt orderDate scanHistory shopifyId trackingNumber trackingUrl shopifyShipmentStatus');
 
   let checked = 0;
   let updatedCount = 0;
@@ -211,6 +215,7 @@ async function syncDelhiveryTracking(orderNumbers) {
   let fromShopifyFallback = 0;
   let errors = 0;
   let datesFilled = 0;
+  const datesBySource = {}; // e.g. { 'scan history': 12, 'Delhivery API': 3 }
   const dateIssues = []; // Delivered orders whose real delivery date still couldn't be found
   syncProgress = { checked: 0, total: pending.length };
 
@@ -218,14 +223,15 @@ async function syncDelhiveryTracking(orderNumbers) {
     if (dateIssues.length < 25) dateIssues.push({ orderNumber: order.orderNumber, reason });
   };
 
-  // Delhivery API lookup with the same retry-once-on-429 behaviour.
-  const apiLookup = async (order) => {
-    let r = await fetchByOrderNumber(order.orderNumber, order.trackingNumber);
-    if (r.rateLimited) {
-      await sleep(Math.min(r.retryAfterSeconds, 60) * 1000);
-      r = await fetchByOrderNumber(order.orderNumber, order.trackingNumber);
-    }
-    return r;
+  // Writes a found date (with where it came from) and counts it.
+  const saveDate = async (order, found) => {
+    await Order.updateOne(
+      { _id: order._id },
+      { $set: { actualDeliveryDate: found.date, actualDeliverySource: found.source } }
+    );
+    order.actualDeliveryDate = found.date;
+    datesFilled += 1;
+    datesBySource[found.source] = (datesBySource[found.source] || 0) + 1;
   };
 
   try {
@@ -233,14 +239,28 @@ async function syncDelhiveryTracking(orderNumbers) {
       checked += 1;
       syncProgress.checked = checked;
       const needsDate = () => !order.actualDeliveryDate;
-      let pageNote = null;
 
-      // Tier 1: Delhivery's own API — the source of truth for status AND
-      // the actual delivery date. Tried first for every order: ref_id (our
-      // "NEAT-<orderNumber>" convention), then the real AWB from Shopify's
-      // fulfillment tracking, which also catches aggregator-booked
-      // orders that still ship on Delhivery's network.
+      // Step 0 — Delivered order with no actual delivery date yet: read it
+      // from the scan history already stored on the order. No network
+      // call, no pacing delay. Only if the history has no usable
+      // "Delivered" scan do we go on to the live checks below.
+      if (order.packagedStatus === 'Delivered' && needsDate()) {
+        const fromScans = deliveryDateFromScanHistory(order.scanHistory, order.orderDate);
+        if (fromScans) {
+          await saveDate(order, { date: fromScans, source: 'scan history' });
+          continue;
+        }
+      }
+
+      let finalStatus = order.packagedStatus;
+      const known = {};
+
+      // Tier 1: Delhivery's own API — status + scan history. Tried first
+      // for every order: ref_id (our "NEAT-<orderNumber>" convention),
+      // then the real AWB from Shopify's fulfillment tracking, which also
+      // catches aggregator-booked orders that still ship on Delhivery.
       const result = await apiLookup(order);
+      known.api = result;
 
       if (!result.error && !result.notFound) {
         const set = {
@@ -252,93 +272,68 @@ async function syncDelhiveryTracking(orderNumbers) {
           syncError: null,
         };
         if (result.estimatedDeliveryDate) set.estimatedDeliveryDate = result.estimatedDeliveryDate;
-        if (result.packagedStatus === 'Delivered' && result.actualDeliveryDate && needsDate()) {
-          set.actualDeliveryDate = result.actualDeliveryDate;
-          datesFilled += 1;
-        } else if (result.packagedStatus === 'Delivered' && needsDate()) {
-          noteIssue(order, 'Delhivery says Delivered but returned no delivery date');
-        }
-        const stampedAt = deliveredAtStamp(result.packagedStatus, order, result.actualDeliveryDate || result.estimatedDeliveryDate);
+        const stampedAt = deliveredAtStamp(result.packagedStatus, order, result.actualDeliveryDate);
         if (stampedAt) set.deliveredAt = stampedAt;
         const returnedStampedAt = returnedAtStamp(result.packagedStatus, order, result.returnedScanDate);
         if (returnedStampedAt) set.returnedAt = returnedStampedAt;
-
         // Pickup date: write-once, never overwritten once set — same as your script.
         if (!order.pickupDate && result.pickupDate) set.pickupDate = result.pickupDate;
 
         await Order.updateOne({ _id: order._id }, { $set: set });
         updatedCount += 1;
-        await sleep(DELAY_MS);
-        continue;
-      }
+        finalStatus = result.packagedStatus;
+      } else {
+        if (result.error) {
+          errors += 1;
+          await Order.updateOne({ _id: order._id }, { $set: { syncError: result.error, lastSyncedAt: new Date() } });
+        }
 
-      // Delhivery doesn't have this shipment (or the call failed) — fall
-      // back to the other courier partner's tracking link.
-      const apiNote = result.error ? `Delhivery API error: ${result.error}` : 'Delhivery has no record of this order/AWB';
-      if (result.error) {
-        errors += 1;
-        await Order.updateOne({ _id: order._id }, { $set: { syncError: result.error, lastSyncedAt: new Date() } });
-      }
+        // Tier 2: the order's own tracking link (raw HTML). Shiprocket
+        // links give a full status; any other partner's link is trusted
+        // only for an explicit "Delivered" and its date.
+        const pageResult = await fetchTrackingPageStatus(order.trackingUrl);
+        known.page = pageResult;
 
-      // Tier 2: read the order's own tracking link (raw HTML). Shiprocket
-      // links give a full status; any other partner's link is trusted
-      // only for an explicit "Delivered" and its date.
-      const pageResult = await fetchTrackingPageStatus(order.trackingUrl);
-      if (!order.trackingUrl) pageNote = 'no tracking link saved';
-      else if (pageResult && pageResult.error) pageNote = `tracking link: ${pageResult.error}`;
-      else if (pageResult && pageResult.notFound) pageNote = `tracking link: ${pageResult.reason || 'no status found'}`;
-
-      if (pageResult && pageResult.packagedStatus) {
-        const pageDate = pageResult.packagedStatus === 'Delivered' ? pageResult.deliveredDate : null;
-        if (pageResult.packagedStatus !== order.packagedStatus) {
-          const set = { packagedStatus: pageResult.packagedStatus, lastSyncedAt: new Date(), syncError: null };
-          const stampedAt = deliveredAtStamp(pageResult.packagedStatus, order, pageDate);
-          if (stampedAt) set.deliveredAt = stampedAt;
-          const returnedStampedAt = returnedAtStamp(pageResult.packagedStatus, order);
-          if (returnedStampedAt) set.returnedAt = returnedStampedAt;
-          if (pageDate && needsDate()) {
-            set.actualDeliveryDate = pageDate;
-            datesFilled += 1;
+        if (pageResult && pageResult.packagedStatus) {
+          const set = { lastSyncedAt: new Date(), syncError: null };
+          if (pageResult.packagedStatus !== order.packagedStatus) {
+            set.packagedStatus = pageResult.packagedStatus;
+            const stampedAt = deliveredAtStamp(pageResult.packagedStatus, order, pageResult.deliveredDate);
+            if (stampedAt) set.deliveredAt = stampedAt;
+            const returnedStampedAt = returnedAtStamp(pageResult.packagedStatus, order);
+            if (returnedStampedAt) set.returnedAt = returnedStampedAt;
+            fromTrackingPage += 1;
+            updatedCount += 1;
           }
           await Order.updateOne({ _id: order._id }, { $set: set });
-          fromTrackingPage += 1;
-          updatedCount += 1;
-          if (pageResult.packagedStatus === 'Delivered' && !set.actualDeliveryDate && needsDate()) {
-            noteIssue(order, `${apiNote}; link says Delivered but no date could be read from its HTML`);
-          }
+          finalStatus = pageResult.packagedStatus;
         } else {
-          const same = { lastSyncedAt: new Date(), syncError: null };
-          if (pageDate && needsDate()) {
-            same.actualDeliveryDate = pageDate;
-            datesFilled += 1;
-            updatedCount += 1;
-          } else if (pageResult.packagedStatus === 'Delivered' && needsDate()) {
-            noteIssue(order, `${apiNote}; link says Delivered but no date could be read from its HTML`);
+          // Tier 3, last resort for STATUS: Shopify's own carrier-reported
+          // shipment_status (what the order page in Shopify shows).
+          const mapped = SHIPMENT_STATUS_MAP[order.shopifyShipmentStatus];
+          if (mapped && mapped !== order.packagedStatus) {
+            const set = { packagedStatus: mapped, lastSyncedAt: new Date(), syncError: null };
+            const stampedAt = deliveredAtStamp(mapped, order);
+            if (stampedAt) set.deliveredAt = stampedAt;
+            const returnedStampedAt = returnedAtStamp(mapped, order);
+            if (returnedStampedAt) set.returnedAt = returnedStampedAt;
+            await Order.updateOne({ _id: order._id }, { $set: set });
+            fromShopifyFallback += 1;
+            finalStatus = mapped;
+          } else if (!result.error) {
+            notFound += 1;
           }
-          await Order.updateOne({ _id: order._id }, { $set: same });
         }
-        await sleep(DELAY_MS);
-        continue;
       }
 
-      // Tier 3, last resort: Shopify's own carrier-reported
-      // shipment_status (the same info shown on the order's page in
-      // Shopify) — covers shipments neither Delhivery nor the link resolved.
-      const mapped = SHIPMENT_STATUS_MAP[order.shopifyShipmentStatus];
-      if (mapped && mapped !== order.packagedStatus) {
-        const set = { packagedStatus: mapped, lastSyncedAt: new Date(), syncError: null };
-        const stampedAt = deliveredAtStamp(mapped, order);
-        if (stampedAt) set.deliveredAt = stampedAt;
-        const returnedStampedAt = returnedAtStamp(mapped, order);
-        if (returnedStampedAt) set.returnedAt = returnedStampedAt;
-        await Order.updateOne({ _id: order._id }, { $set: set });
-        fromShopifyFallback += 1;
-        if (mapped === 'Delivered') noteIssue(order, `Delivered per Shopify only; ${apiNote}${pageNote ? `; ${pageNote}` : ''}`);
-      } else {
-        if (!result.error) notFound += 1;
-        if (order.packagedStatus === 'Delivered' && needsDate()) {
-          noteIssue(order, `${apiNote}${pageNote ? `; ${pageNote}` : ''}`);
-        }
+      // Delivered (already, or as just determined) but no real date yet:
+      // walk every source — scan history, Delhivery, raw HTML of the
+      // link, Shopify events. Reuses what was already fetched above.
+      // Blank + a stated reason if none of them has a genuine date.
+      if (finalStatus === 'Delivered' && needsDate()) {
+        const found = await findActualDeliveryDate(order, known);
+        if (found.date) await saveDate(order, found);
+        else noteIssue(order, found.reasons.join('; '));
       }
       await sleep(DELAY_MS);
     }
@@ -346,7 +341,7 @@ async function syncDelhiveryTracking(orderNumbers) {
     syncProgress = null;
   }
 
-  return { checked, updated: updatedCount, datesFilled, dateIssues, fromTrackingPage, fromShopifyFallback, notFound, errors, remaining: 0 };
+  return { checked, updated: updatedCount, datesFilled, datesBySource, dateIssues, fromTrackingPage, fromShopifyFallback, notFound, errors, remaining: 0 };
 }
 
 async function runSync({ since, until } = {}) {

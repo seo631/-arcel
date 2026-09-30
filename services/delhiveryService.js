@@ -255,7 +255,11 @@ async function queryDelhivery(extraParams) {
     // packagedStatus is 'RTO'.
     returnedScanDate: packagedStatus === 'RTO' ? scanDate : null,
     ndrReason: status.Status && status.Status !== 'Delivered' ? status.Instructions : null,
-    scanHistory: scanHistory.map(({ date, label }) => ({ date, label })), // drop rawDate/scanType — not part of the schema
+    scanHistory: scanHistory.map(({ date, label, rawDate }) => ({
+      date,
+      label,
+      iso: /^\d{4}-\d{2}-\d{2}/.test(String(rawDate || '')) ? String(rawDate).slice(0, 10) : undefined,
+    })),
   };
 }
 

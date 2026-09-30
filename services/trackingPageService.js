@@ -130,7 +130,73 @@ function htmlToText(html) {
     .replace(/\s+/g, ' ');
 }
 
+// Structured pass: SPA-style trackers ship their data as JSON inside
+// <script> tags (Next.js __NEXT_DATA__, application/json, window.__X__ =
+// {...}). Parse those blobs and walk them: any object that says
+// "Delivered" (in a status/event-type field) AND carries a date field is
+// a delivery event. Newest such event wins. No regex guessing on text.
+const DELIVERED_TEXT = /\bdelivered\b/i;
+const NOT_DELIVERY = /undelivered|not\s+delivered|rto|return|origin/i;
+const STATUS_KEY = /status|state|event|activity|remark|description|label|title|scan|name|type/i;
+const DATE_KEY = /date|time|at$|on$|timestamp|happened/i;
+
+function dateFromJsonValue(v) {
+  if (typeof v === 'number') {
+    const ms = v > 1e12 ? v : v > 1e9 ? v * 1000 : null;
+    if (!ms) return null;
+    const d = new Date(ms);
+    return d.getFullYear() >= 2020 && d <= new Date() ? makeDate(d.getFullYear(), d.getMonth(), d.getDate()) : null;
+  }
+  if (typeof v === 'string') {
+    const found = findDates(v);
+    return found.length ? found[0].date : null;
+  }
+  return null;
+}
+
+function extractFromJsonBlobs(html) {
+  const blobs = [];
+  const scriptRe = /<script\b[^>]*>([\s\S]*?)<\/script>/gi;
+  let sm;
+  while ((sm = scriptRe.exec(html))) {
+    const body = sm[1].trim();
+    if (!body) continue;
+    let json = null;
+    if (body[0] === '{' || body[0] === '[') json = body;
+    else {
+      const assign = body.match(/=\s*(\{[\s\S]*\}|\[[\s\S]*\])\s*;?\s*$/);
+      if (assign) json = assign[1];
+    }
+    if (!json) continue;
+    try { blobs.push(JSON.parse(json)); } catch (e) { /* not JSON — skip */ }
+  }
+
+  const candidates = [];
+  const walk = (node, depth) => {
+    if (!node || depth > 25) return;
+    if (Array.isArray(node)) return node.forEach((n) => walk(n, depth + 1));
+    if (typeof node !== 'object') return;
+    const entries = Object.entries(node);
+    const saysDelivered = entries.some(([k, v]) => typeof v === 'string' && STATUS_KEY.test(k) && DELIVERED_TEXT.test(v) && !NOT_DELIVERY.test(v));
+    if (saysDelivered) {
+      for (const [k, v] of entries) {
+        if (!DATE_KEY.test(k)) continue;
+        const d = dateFromJsonValue(v);
+        if (d) candidates.push(d);
+      }
+    }
+    entries.forEach(([, v]) => { if (v && typeof v === 'object') walk(v, depth + 1); });
+  };
+  blobs.forEach((b) => walk(b, 0));
+  if (!candidates.length) return null;
+  return candidates.sort((a, b) => b - a)[0];
+}
+
 function extractDeliveredDate(html) {
+  // 0) Structured JSON embedded in the page.
+  const fromJson = extractFromJsonBlobs(html);
+  if (fromJson) return fromJson;
+
   // 1) Explicit key in embedded JSON, e.g. "delivered_date":"2026-09-05 14:32:00"
   //    or an epoch value like "delivered_at":1757059200.
   const keyRe = /["'](?:delivered_date|delivery_date|delivered_at|deliveredDate|deliveredOn|delivered_on|deliveredAt|delivery_datetime|actual_delivery_date|actualDeliveryDate)["']\s*:\s*(?:["']([^"']+)["']|(\d{10,13}))/gi;

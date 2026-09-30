@@ -13,6 +13,7 @@ const ScanEventSchema = new mongoose.Schema(
   {
     date: String, // e.g. "3 Sep" — Delhivery's own compact format
     label: String, // scan description, consecutive duplicates collapsed
+    iso: String, // full YYYY-MM-DD of the scan (newer syncs only — `date` above has no year)
   },
   { _id: false }
 );
@@ -66,6 +67,7 @@ const OrderSchema = new mongoose.Schema(
     // page. Only ever set from a real source (never "now"), so blank
     // means "delivered but the date couldn't be read", not a guess.
     actualDeliveryDate: Date,
+    actualDeliverySource: String, // where it came from: scan history / Delhivery API / tracking link / Shopify / excel / manual — for auditing
     returnedAt: Date, // set once packagedStatus === 'RTO' — the actual return-scan date when known, not just when we happened to sync
     packagedStatus: {
       type: String,

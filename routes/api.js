@@ -133,7 +133,7 @@ router.delete('/orders', async (req, res) => {
 router.get('/debug/tracking/:orderNumber', async (req, res) => {
   try {
     const order = await Order.findOne({ orderNumber: req.params.orderNumber })
-      .select('orderNumber packagedStatus trackingUrl trackingNumber courier actualDeliveryDate')
+      .select('orderNumber packagedStatus trackingUrl trackingNumber courier actualDeliveryDate actualDeliverySource')
       .lean();
     if (!order) return res.status(404).json({ error: 'Order not found' });
     if (!order.trackingUrl) return res.json({ order, problem: 'This order has no tracking link saved.' });
@@ -358,6 +358,7 @@ router.post('/orders/export', async (req, res) => {
         pickupDate: fmtDate(o.pickupDate),
         estDelivery: fmtDate(o.estimatedDeliveryDate),
         actualDelivery: fmtDate(o.actualDeliveryDate),
+        actualDeliverySource: o.actualDeliverySource || '',
         status: o.packagedStatus || '',
         cancelledOn: fmtDate(o.cancelledAt),
         returnedOn: fmtDate(o.returnedAt),
@@ -383,6 +384,7 @@ router.post('/orders/export', async (req, res) => {
         'Pickup Date': base.pickupDate,
         'Est. Delivery': base.estDelivery,
         'Actual Delivery': base.actualDelivery,
+        'Actual Delivery Source': base.actualDeliverySource,
         'Status': base.status,
         'Cancelled On': base.cancelledOn,
         'Returned On': base.returnedOn,

@@ -31,16 +31,24 @@ Returned On, Payment Mode — plus a Scan History drawer per order.
 - **Pickup Date** is write-once — never overwritten once set.
 - **Estimated delivery** uses `PromisedDeliveryDate || ExpectedDeliveryDate`
   and always stays the estimate.
-- **Actual Delivery** is a separate column, filled only when an order's
-  status is Delivered *and* a real date was read. Delhivery's API is
-  always tried first (the DL delivery scan, `DeliveryDate`, or the
-  Delivered status time); only if Delhivery has no record of the
-  order/AWB is the order's tracking link (other courier partner) read. It's
-  write-once and never set to "today" as a guess — blank means the date
-  couldn't be read. Delivered orders still missing it stay in the
-  auto-check queue for `DELIVERY_DATE_BACKFILL_DAYS` (default 60). For
-  older history run `npm run backfill:delivery-date` once (try
-  `-- --limit 20` first).
+- **Actual Delivery** is a separate column, filled only from a real
+  source — never "today", never an estimate. For an order that is
+  Delivered and has no date, these are tried in order:
+  1. the scan history stored on the order (no network),
+  2. Delhivery's API (the DL delivery scan, `DeliveryDate`, or the
+     Delivered status time),
+  3. the raw HTML of the order's tracking link (other courier partners),
+  4. Shopify's fulfillment events (the timeline on the order page).
+
+  Every date must also look plausible (not in the future, not before the
+  order, not more than 180 days after it) or it's rejected. If no source
+  has a genuine date the cell stays blank and the check result says why.
+  The source is shown on hover and in the Excel export. Write-once.
+  Scan history entries only hold "5 Sep" (no year), so the year is worked
+  out from the order date; newer syncs store the full date. Delivered
+  orders still missing a date stay in the auto-check queue for
+  `DELIVERY_DATE_BACKFILL_DAYS` (default 60); for older history run
+  `npm run backfill:delivery-date` once (try `-- --limit 20` first).
 - **Tracking links:** Shiprocket links are fully parsed; for any other
   partner's link only an explicit "Delivered" (+ its date) is trusted.
   If a date isn't picked up, open `/api/debug/tracking/<orderNumber>` in

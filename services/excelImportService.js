@@ -123,7 +123,7 @@ async function importFromWorkbook(buffer) {
     if (rec.pickupDate && !(existing && existing.pickupDate)) set.pickupDate = rec.pickupDate;
     if (rec.estimatedDeliveryDate) set.estimatedDeliveryDate = rec.estimatedDeliveryDate;
     // Same as the live sync: write-once, a real date is never overwritten.
-    if (rec.actualDeliveryDate && !(existing && existing.actualDeliveryDate)) set.actualDeliveryDate = rec.actualDeliveryDate;
+    if (rec.actualDeliveryDate && !(existing && existing.actualDeliveryDate)) { set.actualDeliveryDate = rec.actualDeliveryDate; set.actualDeliverySource = 'excel import'; }
     if (!existing) set.source = 'excel';
     set.lastSyncedAt = new Date();
 

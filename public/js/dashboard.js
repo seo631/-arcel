@@ -175,7 +175,7 @@ function rowHTML(o) {
       <td>${qty || '—'}</td>
       <td>${fmtDate(o.pickupDate)}</td>
       <td>${fmtDate(o.estimatedDeliveryDate)}</td>
-      <td>${fmtDate(o.actualDeliveryDate)}</td>
+      <td${o.actualDeliverySource ? ` title="Source: ${escapeHTML(o.actualDeliverySource)}"` : ''}>${fmtDate(o.actualDeliveryDate)}</td>
       <td><span class="status-badge" style="background:${statusColor(o.packagedStatus)}">${escapeHTML(o.packagedStatus || 'Unknown')}</span></td>
       <td>${fmtDate(o.cancelledAt)}</td>
       <td>${fmtDate(o.returnedAt)}</td>
@@ -287,7 +287,7 @@ document.getElementById('bulkUpdateBtn').onclick = async () => {
 // explicitly. Skips the rest of the "Not Yet Shipped" queue entirely. ----
 function describeCheckResult(d) {
   if (!d) return 'Done.';
-  const parts = [`Checked ${d.checked}`, `status updated ${d.updated}`, `actual delivery date filled ${d.datesFilled || 0}`];
+  const parts = [`Checked ${d.checked}`, `status updated ${d.updated}`, `actual delivery date filled ${d.datesFilled || 0}${d.datesBySource && Object.keys(d.datesBySource).length ? ` (${Object.entries(d.datesBySource).map(([k, v]) => `${v} from ${k}`).join(', ')})` : ''}`];
   if (d.fromTrackingPage) parts.push(`${d.fromTrackingPage} status from tracking link`);
   if (d.fromShopifyFallback) parts.push(`${d.fromShopifyFallback} from Shopify`);
   parts.push(`not found ${d.notFound}`, `errors ${d.errors}`);

@@ -142,6 +142,41 @@ async function fetchOrdersSince(sinceISO, untilISO) {
   return all.map(normalizeOrder);
 }
 
+// Delivered date straight from Shopify's own fulfillment events (the
+// timeline on the order page — carriers/aggregators push a "delivered"
+// event with the real timestamp). Two lightweight calls: the order's
+// fulfillments, then each one's events. Returns { date } or { reason }.
+// Never guesses: no delivered event => no date.
+async function fetchDeliveredDateFromShopify(shopifyId) {
+  let client;
+  try {
+    client = shopifyClient();
+  } catch (err) {
+    return { reason: err.message };
+  }
+  try {
+    const fRes = await client.get(`/orders/${shopifyId}/fulfillments.json`);
+    const fulfillments = (fRes.data.fulfillments || []).filter((f) => f.status !== 'cancelled').reverse(); // newest first
+    if (!fulfillments.length) return { reason: 'Shopify: order has no fulfillment' };
+    for (const f of fulfillments) {
+      const eRes = await client.get(`/orders/${shopifyId}/fulfillments/${f.id}/events.json`);
+      const delivered = (eRes.data.fulfillment_events || [])
+        .filter((e) => String(e.status).toLowerCase() === 'delivered' && e.happened_at)
+        .sort((a, b) => new Date(b.happened_at) - new Date(a.happened_at));
+      if (delivered.length) {
+        // Store's calendar day (IST), not the UTC day of the timestamp.
+        const ist = new Date(new Date(delivered[0].happened_at).getTime() + 330 * 60 * 1000);
+        const date = new Date(ist.getUTCFullYear(), ist.getUTCMonth(), ist.getUTCDate());
+        return { date };
+      }
+    }
+    return { reason: 'Shopify: no "delivered" event on the fulfillment' };
+  } catch (err) {
+    const code = err.response?.status;
+    return { reason: `Shopify events unavailable${code ? ` (HTTP ${code})` : `: ${err.message}`}` };
+  }
+}
+
 function resolveDefaultSince() {
   const explicit = process.env.SHOPIFY_SYNC_START_DATE; // e.g. "2026-08-01"
   if (explicit) return new Date(explicit).toISOString();
@@ -159,5 +194,6 @@ module.exports = {
   resolveDefaultSince,
   normalizeOrder,
   isDelhiveryCourier,
+  fetchDeliveredDateFromShopify,
   SHIPMENT_STATUS_MAP,
 };
